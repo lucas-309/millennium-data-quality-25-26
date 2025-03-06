@@ -4,7 +4,11 @@ from order_generator import MeanReversionOrderGenerator
 from backtest_engine import EquityBacktestEngine
 from metrics import ExtendedMetrics
 
+# TODO: refactor into python notebooks, this is a MEAN REV demo of the backtester as a .py file
 def main():
+    """
+    Example of using the backtester to backtest a mean reversion strategy on a portfolio of equities.
+    """
     data_source = YahooFinanceDataSource()
     order_generator = MeanReversionOrderGenerator()
     backtest_engine = EquityBacktestEngine(initial_cash=100000)

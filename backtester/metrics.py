@@ -26,10 +26,11 @@ class ExtendedMetrics(Metrics):
         # volatility is the standard deviation of returns
         metrics['Volatility'] = returns.std() * np.sqrt(252)  # annualize volatility, 252 trading days in a yr
 
-        if benchmark_returns is not None:
-            metrics['Information Coefficient'] = returns.corr(benchmark_returns)
-        else:
-            metrics['Information Coefficient'] = None
+        # TODO: this part is buggy, need to fix
+        # if benchmark_returns is not None:
+        #     metrics['Information Coefficient'] = returns.corr(benchmark_returns)
+        # else:
+        #     metrics['Information Coefficient'] = None
 
         risk_free_rate = 0.0045  
         excess_returns = returns - (risk_free_rate / 252)

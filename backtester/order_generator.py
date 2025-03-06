@@ -34,9 +34,10 @@ class MeanReversionOrderGenerator(OrderGenerator):
 class BettingAgainstBetaOrderGenerator(OrderGenerator):
     """Betting Against Beta (BAB) strategy implementation."""
     
-    def __init__(self, lookback_period: int = 60, rebalance_frequency: str = 'ME'):
+    def __init__(self, lookback_period: int = 60, rebalance_frequency: str = 'ME', starting_portfolio_value: float = 100000):
         self.lookback_period = lookback_period
         self.rebalance_frequency = rebalance_frequency
+        self.starting_portfolio_value = starting_portfolio_value
     
     def calculate_beta(self, stock_returns: pd.Series, market_returns: pd.Series) -> float:
         """
@@ -86,22 +87,25 @@ class BettingAgainstBetaOrderGenerator(OrderGenerator):
 
         orders = []
 
+        # TODO: Implement position sizing based on portfolio value / parameterization for leverage to control MAX drawdown metric (sharpe should be the same)
         # long bottom decile, short top decile of beta stocks
         for ticker in low_beta_tickers:
+            quantity = int(self.starting_portfolio_value * low_beta_weight / decile_size)
             orders.append({
                 "date": date,
                 "type": "BUY",
                 "ticker": ticker,
-                "quantity": 100 * low_beta_weight / decile_size  
+                "quantity": quantity  
             })
             print(f"Buying {ticker} on {date}")
 
         for ticker in high_beta_tickers:
+            quantity = int(self.starting_portfolio_value * high_beta_weight / decile_size)
             orders.append({
                 "date": date,
                 "type": "SELL",
                 "ticker": ticker,
-                "quantity": 100 * high_beta_weight / decile_size
+                "quantity": quantity
             })
             print(f"Selling {ticker} on {date}")
 

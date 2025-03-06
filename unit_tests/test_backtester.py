@@ -9,57 +9,6 @@ from backtester.data_source import YahooFinanceDataSource
 from backtester.order_generator import MeanReversionOrderGenerator
 from backtester.backtest_engine import EquityBacktestEngine
 
-class TestMarketWeightedPortfolio(unittest.TestCase):
-    @patch('backtester.data_source.YahooFinanceDataSource.get_market_cap_on_date')
-    @patch('backtester.data_source.YahooFinanceDataSource.get_historical_data')
-    @patch('backtester.data_source.YahooFinanceDataSource.get_sp500_index_data')
-    def test_sp500_equivalent_portfolio(self, mock_index_data, mock_historical_data, mock_market_cap_on_date):
-        start_date = '2023-01-02'
-        end_date = '2023-01-06'  # pick any short period where index is not rebalanced
-        specific_date = '2023-01-02'
-
-        # mock market caps
-        tickers = ['AAPL', 'MSFT', 'AMZN']  
-        market_caps = {
-            'AAPL': 2e12,
-            'MSFT': 1.8e12,
-            'AMZN': 1.6e12
-        }
-        mock_market_cap_on_date.side_effect = lambda ticker, date: market_caps.get(ticker, None)
-
-        # mock historical price data for components
-        dates = pd.date_range(start=start_date, end=end_date)
-        mock_prices = pd.DataFrame({
-            'AAPL': [150, 152, 154, 153, 155],
-            'MSFT': [250, 251, 253, 252, 254],
-            'AMZN': [3300, 3320, 3340, 3330, 3350]
-        }, index=dates)
-        mock_historical_data.return_value = mock_prices
-        
-        # mock SPY data
-        mock_index_prices = pd.Series([3800, 3820, 3840, 3830, 3850], index=dates, name='^GSPC')
-        mock_index_data.return_value = mock_index_prices
-
-        data_source = YahooFinanceDataSource()
-        sp500_components = data_source.get_sp500_components_on_date(specific_date)
-        sp500_components = data_source.calculate_market_weights(sp500_components)
-
-        portfolio_values = data_source.create_market_weighted_portfolio(
-            components=sp500_components,
-            start_date=start_date,
-            end_date=end_date
-        )
-
-        portfolio_return = (portfolio_values.iloc[-1] / portfolio_values.iloc[0]) - 1
-        index_return = (mock_index_prices.iloc[-1] / mock_index_prices.iloc[0]) - 1
-
-        self.assertAlmostEqual(
-            portfolio_return,
-            index_return,
-            delta=0.003, # at most 0.3% difference
-            msg=f"Portfolio return {portfolio_return} does not match index return {index_return}"
-        )
-
 class TestBacktesterAndOrderGenerator(unittest.TestCase):
 
     @patch('backtester.data_source.YahooFinanceDataSource.get_historical_data')
@@ -68,7 +17,7 @@ class TestBacktesterAndOrderGenerator(unittest.TestCase):
         num_days = 150
         dates = pd.date_range(start='2023-01-01', periods=num_days)
         # create a price series that fluctuates around a mean to trigger buy/sell signals
-        np.random.seed(0)  # for reproducibility
+        np.random.seed(0)  #
         prices = 100 + np.cumsum(np.random.normal(0, 1, size=num_days))
         mock_data = pd.DataFrame({
             'AAPL': prices

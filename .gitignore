@@ -1,2 +1,6 @@
-/venv/
-/data/
+data/
+.vscode/
+sp500_data.pkl
+__pycache__/
+*.pyc
+*.ipynb_checkpoints/

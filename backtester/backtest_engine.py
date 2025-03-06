@@ -14,6 +14,7 @@ class BacktestEngine(ABC):
         """Run backtest simulation given orders and historical data."""
         pass
 
+# TODO: clean up refactor implementations into sep. files, e.g. equity_backtest_engine.py
 class EquityBacktestEngine(BacktestEngine):
     """Equities (long/short) backtest engine implementation without slippage or transaction costs."""
 
