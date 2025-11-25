@@ -3,6 +3,8 @@ import pandas as pd
 import yfinance as yf
 from typing import List, Optional, Dict, Any
 import numpy as np
+import pickle
+import os
 
 class DataSource(ABC):
     """Interface for fetching historical market data."""
@@ -11,6 +13,36 @@ class DataSource(ABC):
     def get_historical_data(self, tickers: List[str], start_date: str, end_date: str) -> pd.DataFrame:
         """Fetch historical data for given tickers and date range."""
         pass
+
+class PickleDataSource(DataSource):
+    """Implementation of DataSource that reads from a local pickle file."""
+    
+    def __init__(self, file_path: str):
+        self.file_path = file_path
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Cache file not found at {file_path}. Please run cache_sp500_data.py first.")
+        
+        with open(file_path, 'rb') as f:
+            self.data = pickle.load(f)
+            
+    def get_historical_data(self, tickers: List[str], start_date: str, end_date: str) -> pd.DataFrame:
+        result = pd.DataFrame()
+        
+        # Ensure dates are timestamps for comparison
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        
+        for ticker in tickers:
+            if ticker in self.data:
+                ticker_df = self.data[ticker]
+                # Filter by date
+                mask = (ticker_df.index >= start_ts) & (ticker_df.index <= end_ts)
+                filtered_data = ticker_df.loc[mask, 'Adj Close']
+                result[ticker] = filtered_data
+            else:
+                print(f"Warning: Ticker {ticker} not found in cache.")
+        
+        return result
 
 # TODO: refactor implementations into sep. files, e.g. yahoo_finance_data_source.py
 class YahooFinanceDataSource(DataSource):
