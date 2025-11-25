@@ -1,11 +1,20 @@
 import pandas as pd
 import yfinance as yf
 import pickle
+import requests
+from io import StringIO
 
 def fetch_sp500_tickers():
-    sp500_table = pd.read_html('https://en.wikipedia.org/wiki/List_of_S%26P_500_companies')[0]
+    url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    
+    sp500_table = pd.read_html(StringIO(response.text))[0]
     tickers = sp500_table['Symbol'].tolist()
     tickers = [ticker.replace('.', '-') for ticker in tickers]
+    if 'SPY' not in tickers:
+        tickers.append('SPY')
     return tickers
 
 def download_data(tickers, start_date, end_date):

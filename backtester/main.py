@@ -1,5 +1,6 @@
 import pandas as pd
-from data_source import YahooFinanceDataSource
+import os
+from data_source import YahooFinanceDataSource, PickleDataSource
 from order_generator import MeanReversionOrderGenerator
 from backtest_engine import EquityBacktestEngine
 from metrics import ExtendedMetrics
@@ -9,7 +10,15 @@ def main():
     """
     Example of using the backtester to backtest a mean reversion strategy on a portfolio of equities.
     """
-    data_source = YahooFinanceDataSource()
+    # Check for cached data first
+    cache_file = 'sp500_data.pkl'
+    if os.path.exists(cache_file):
+        print(f"Using cached data from {cache_file}")
+        data_source = PickleDataSource(cache_file)
+    else:
+        print("Cache file not found, using Yahoo Finance API")
+        data_source = YahooFinanceDataSource()
+
     order_generator = MeanReversionOrderGenerator()
     backtest_engine = EquityBacktestEngine(initial_cash=100000)
     metrics_calculator = ExtendedMetrics()
