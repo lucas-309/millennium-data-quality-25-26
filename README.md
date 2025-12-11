@@ -4,7 +4,7 @@
 
 1. **Clone the repository:**
     ```sh
-    git clone https://github.com/jerrychen04/millennium-data-quality.git
+    git clone https://github.com/lucas-309/millennium-data-quality-25-26
     cd millennium-data-quality
     ```
 
