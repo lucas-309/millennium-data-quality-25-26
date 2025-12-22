@@ -1,4 +1,4 @@
-# Strategy Development Guide
+# Project Guide
 
 ## Project Structure
 ```
