@@ -51,7 +51,7 @@ class EquityBacktestEngine(BacktestEngine):
                 total_value += position_value
 
             portfolio_values.append((current_date, total_value))
-            print(f"{current_date}: Portfolio Value - {total_value:.2f}")
+            # print(f"{current_date}: Portfolio Value - {total_value:.2f}") # Debug print portfolio each day
 
         portfolio_values_df = pd.DataFrame(portfolio_values, columns=["Date", "Portfolio Value"]).set_index("Date")
         return {"portfolio_values": portfolio_values_df}
