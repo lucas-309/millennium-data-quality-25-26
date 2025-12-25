@@ -7,8 +7,8 @@ A backtesting framework for quantitative trading strategies with support for equ
 ## Installation
 
 1. **Clone the repository:**
-```sh
-    git clone https://github.com/jerrychen04/millennium-data-quality.git
+    ```sh
+    git clone https://github.com/lucas-309/millennium-data-quality-25-26
     cd millennium-data-quality
 ```
 
