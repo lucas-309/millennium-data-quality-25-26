@@ -32,9 +32,9 @@ def main():
         print("Cache file not found, using Yahoo Finance API")
         data_source = YahooFinanceDataSource()
 
-    tickers = ["AAPL", "MSFT", "GOOGL"]
+    tickers = ["NVDA"]
     start_date = "2011-01-01"
-    end_date = "2024-01-01"
+    end_date = "2025-01-01"
     
     data = data_source.get_historical_data(tickers, start_date, end_date)
 
@@ -58,6 +58,7 @@ def main():
 
     backtest_results = backtest_engine.run_backtest(orders, data)
     portfolio_values = backtest_results["portfolio_values"]["Portfolio Value"]
+    daily_holdings_and_cash = backtest_results["daily_holdings_and_cash"]
     
     if portfolio_values.empty:
          print("Error: Portfolio values empty. Cannot calculate metrics.")
@@ -73,7 +74,7 @@ def main():
     else:
          benchmark_returns = benchmark_data["SPY"].pct_change().dropna()
 
-    metrics = metrics_calculator.calculate(portfolio_values, returns, benchmark_returns)
+    metrics = metrics_calculator.calculate(portfolio_values, returns, benchmark_returns, data, daily_holdings_and_cash)
     # Note: all values are annualized and assume 252 trading days in a year
     # Note: all returns are in fractional format. For example, 0.01 is 1% return
     print("###\nBacktest Metrics:")
