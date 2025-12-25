@@ -91,13 +91,7 @@ class EquityBacktestEngine(BacktestEngine):
                 current_day_holdings[h_ticker] = h_quantity
             
             portfolio_values.append((current_date, total_value))
-            daily_holdings_and_cash_list.append(current_day_holdings) # Store daily holdings and cash
-            
-            # Print only on the first trading day of the month to reduce clutter
-            if last_month != current_date.month:
-                holdings_str = {k: v for k, v in holdings.items() if v > 0}
-                print(f"{current_date}: Portfolio Value - {total_value:.2f}, Cash - {cash:.2f}, Holdings - {holdings_str}")
-                last_month = current_date.month
+            # print(f"{current_date}: Portfolio Value - {total_value:.2f}") # Debug print portfolio each day
 
         portfolio_values_df = pd.DataFrame(portfolio_values, columns=["Date", "Portfolio Value"]).set_index("Date")
         daily_holdings_and_cash_df = pd.DataFrame(daily_holdings_and_cash_list).set_index("Date").fillna(0)
