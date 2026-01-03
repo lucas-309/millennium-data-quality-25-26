@@ -7,9 +7,9 @@ if __name__ == "__main__":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from backtester.data_source import YahooFinanceDataSource, PickleDataSource
-from backtester.order_generator import MeanReversionOrderGenerator
+from strategies.mean_reversion import MeanReversionOrderGenerator
 # from backtester.momentum_strategy import MomentumOrderGenerator
-from backtester.backtest_engine import EquityBacktestEngine
+from backtester.backtesters.equity_backtest import EquityBacktestEngine
 from backtester.metrics import ExtendedMetrics
 
 # TODO: refactor into python notebooks, this is a MEAN REV demo of the backtester as a .py file
@@ -47,6 +47,9 @@ def main():
     if data.empty:
         print("Error: No data could be fetched. Exiting.")
         return
+    else:
+        print("Data head:")
+        print(data.head())
 
     order_generator = MeanReversionOrderGenerator()
     backtest_engine = EquityBacktestEngine(initial_cash=100000)

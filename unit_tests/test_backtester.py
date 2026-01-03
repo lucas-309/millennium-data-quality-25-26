@@ -6,8 +6,8 @@ from unittest.mock import patch
 import pandas as pd
 import numpy as np
 from backtester.data_source import YahooFinanceDataSource
-from backtester.order_generator import MeanReversionOrderGenerator
-from backtester.backtest_engine import EquityBacktestEngine
+from strategies.order_generator import MeanReversionOrderGenerator
+from backtester.backtesters.backtest_engine import EquityBacktestEngine
 
 class TestBacktesterAndOrderGenerator(unittest.TestCase):
 
