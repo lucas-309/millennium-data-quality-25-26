@@ -40,10 +40,10 @@ python backtester/cache_sp500_data.py
 
 Once data is cached, run the sample mean reversion strategy:
 ```sh
-python backtester/main.py
+python main.py
 ```
 
-This will backtest a simple mean reversion strategy on AAPL, MSFT, and GOOGL (2011-2024) and display performance metrics.
+This will backtest a simple mean reversion strategy on SPY (2011-2024) and display performance metrics.
 
 ## Running Sample Research Notebooks
 

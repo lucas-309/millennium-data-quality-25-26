@@ -2,51 +2,38 @@
 
 ## Project Structure
 ```
-backtester/
-├── main.py                 # Entry point - configure and run backtests
-├── data_source.py          # Fetches historical price data (Yahoo Finance, cached pickle)
-├── order_generator.py      # Strategy implementations (inherit from OrderGenerator)
-├── backtest_engine.py      # Executes trades and tracks portfolio value
-├── metrics.py              # Calculates performance metrics (Sharpe, drawdown, etc.)
-└── cache_sp500_data.py     # Downloads and caches S&P 500 data
+millennium-data-quality/
+├── main.py                          # Entry point - run backtests here
+├── backtester/
+│   ├── data_source.py               # Fetch market data
+│   ├── metrics.py                   # Performance metrics
+│   ├── cache_sp500_data.py          # Download & cache data
+│   └── backtesters/
+│       ├── backtest_engine.py       # Base class
+│       ├── equity_backtest_engine.py # Default engine
+│       └── template_engine.py       # Duplicate to create new engines
+└── strategies/
+    ├── order_generator.py           # Base class
+    ├── mean_reversion.py            # Default strategy
+    └── template_strategy.py         # Duplicate to create new strategies
 ```
 
-## Creating a Custom Strategy
+## Creating a New Strategy
 
-### 1. Add Strategy Class to `order_generator.py`
+1. Copy `strategies/template_strategy.py` to `strategies/your_strategy.py`
+2. Implement the `generate_orders()` method
+3. In `main.py`, change the import and instantiation to use your new strategy
 
-Inherit from `OrderGenerator` and implement `generate_orders()`:
-```python
-class MyStrategy(OrderGenerator):
-    def __init__(self, param1=50):
-        self.param1 = param1
-    
-    def generate_orders(self, data: pd.DataFrame) -> List[Dict[str, Any]]:
-        orders = []
-        # Your logic here
-        # Return list of: {"date": timestamp, "type": "BUY"/"SELL", "ticker": str, "quantity": int}
-        return orders
-```
+## Creating a New Backtest Engine
 
-**Input:** `data` = DataFrame with dates as index, tickers as columns, adjusted close prices as values
+1. Copy `backtester/backtesters/template_engine.py` to `backtester/backtesters/your_engine.py`
+2. Implement the `run_backtest()` method
+3. In `main.py`, change the import and instantiation to use your new engine
 
-**Output:** List of order dicts
+## Running a Backtest
 
-### 2. Update `main.py`
-```python
-from backtester.order_generator import MyStrategy
+Follow instructions in [README.md](README.md).
 
-# Change this line:
-order_generator = MyStrategy()
-```
+Activate environment, download & cache data, and then run main.py.
 
-### 3. Run
-```sh
-python backtester/main.py
-```
-
-## Key Metrics
-
-- **Sharpe Ratio**: Risk-adjusted return 
-- **Max Drawdown**: Worst peak-to-trough loss
-- **Cumulative Return**: Total return over backtest period
+To switch strategies or engines, update the imports and object instantiations in `main.py`.
