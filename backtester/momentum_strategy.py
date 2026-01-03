@@ -1,4 +1,4 @@
-from backtester.order_generator import OrderGenerator
+from strategies.order_generator import OrderGenerator
 import pandas as pd
 from typing import List, Dict, Any
 
