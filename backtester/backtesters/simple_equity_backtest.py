@@ -4,10 +4,10 @@ from typing import List, Dict, Any
 
 from .backtest_engine import BacktestEngine
 
-class EquityBacktestEngine(BacktestEngine):
+class SimpleEquityBacktestEngine(BacktestEngine):
     """
-    Equities backtest engine supporting both long and short positions.
-    Allows negative holdings (shorts). No slippage or transaction costs.
+    Equities backtest engine supporting long positions only.
+    Does not support shorting. No slippage or transaction costs.
     """
 
     def run_backtest(self, orders: List[Dict[str, Any]], data: pd.DataFrame) -> Dict[str, Any]:
@@ -63,12 +63,16 @@ class EquityBacktestEngine(BacktestEngine):
                     else:
                         quantity = raw_quantity
                     
+                    # Ensure we don't sell more than we have (unless shorting is supported, assuming long-only logic here for safety or capped at 0)
+                    available = holdings.get(ticker, 0)
+                    quantity = min(quantity, available)
+                    
                     proceeds = price * quantity
                     cash += proceeds
                     holdings[ticker] = holdings.get(ticker, 0) - quantity
 
                 order_index += 1
-            
+
             # Recalculate Total Value after trades
             total_value = cash
             current_day_holdings = {"Date": current_date, "Cash": cash}
@@ -81,38 +85,7 @@ class EquityBacktestEngine(BacktestEngine):
             daily_holdings_and_cash_list.append(current_day_holdings)
             portfolio_values.append((current_date, total_value))
             # print(f"{current_date}: Portfolio Value - {total_value:.2f}") # Debug print portfolio each day
-        
-        # Force close all open positions at final prices
-        final_date = all_dates[-1]
-        for ticker, position in list(holdings.items()):
-            if position != 0:  # If we have an open position
-                final_price = data.at[final_date, ticker]
-            
-                if position > 0:
-                    # Close long position: sell at final price
-                    proceeds = position * final_price
-                    cash += proceeds
-                    print(f"End of backtest: Closed long {position} shares of {ticker} at ${final_price:.2f}")
-                    
-                elif position < 0:
-                    # Close short position: buy back at final price
-                    cost = abs(position) * final_price
-                    cash -= cost
-                    print(f"End of backtest: Covered short {abs(position)} shares of {ticker} at ${final_price:.2f}")
-                
-                holdings[ticker] = 0  # Position now closed
 
-        # Recalculate final portfolio value with all positions closed
-        final_total_value = cash
-        for h_ticker, h_quantity in holdings.items():
-            # Should all be 0 now, but just in case
-            if h_quantity != 0:
-                price = data.at[final_date, h_ticker]
-                final_total_value += price * h_quantity
-        
-        # Update the last portfolio value entry
-        portfolio_values[-1] = (final_date, final_total_value)
-        
         portfolio_values_df = pd.DataFrame(portfolio_values, columns=["Date", "Portfolio Value"]).set_index("Date")
         daily_holdings_and_cash_df = pd.DataFrame(daily_holdings_and_cash_list).set_index("Date").fillna(0)
         return {"portfolio_values": portfolio_values_df, "daily_holdings_and_cash": daily_holdings_and_cash_df}
