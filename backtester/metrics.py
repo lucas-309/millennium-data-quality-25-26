@@ -20,14 +20,14 @@ class ExtendedMetrics(Metrics):
         metrics = {}
         
         # Mean Returns (already captured by Daily Return)
-        metrics['Daily Return'] = returns.mean()
+        metrics['Avg Daily Return'] = returns.mean()
         metrics['Cumulative Return'] = (1 + returns).prod() - 1
         metrics['Log Return'] = np.log(1 + returns).mean()
 
         # Volatility
         metrics['Volatility'] = returns.std() * np.sqrt(252)  # annualize volatility, 252 trading days in a yr
 
-        risk_free_rate = 0.0045  
+        risk_free_rate = 0.045  # 4.5% annual risk-free rate  
         excess_returns = returns - (risk_free_rate / 252)
         metrics['Sharpe Ratio'] = excess_returns.mean() / excess_returns.std() * np.sqrt(252)
 
