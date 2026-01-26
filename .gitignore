@@ -7,3 +7,4 @@ __pycache__/
 .env
 momentum_vs_spy.png
 backtester/momentum_vs_spy.png
+*.xlsx

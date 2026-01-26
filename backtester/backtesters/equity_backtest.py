@@ -1,20 +1,9 @@
-from abc import ABC, abstractmethod
 import pandas as pd
 import numpy as np
 from typing import List, Dict, Any
 
-class BacktestEngine(ABC):
-    """Interface for backtesting a trading strategy."""
-    
-    def __init__(self, initial_cash: float):
-        self.initial_cash = initial_cash
-    
-    @abstractmethod
-    def run_backtest(self, orders: List[Dict[str, Any]], data: pd.DataFrame) -> Dict[str, Any]:
-        """Run backtest simulation given orders and historical data."""
-        pass
+from .backtest_engine import BacktestEngine
 
-# TODO: clean up refactor implementations into sep. files, e.g. equity_backtest_engine.py
 class EquityBacktestEngine(BacktestEngine):
     """Equities (long/short) backtest engine implementation without slippage or transaction costs."""
 
@@ -90,14 +79,9 @@ class EquityBacktestEngine(BacktestEngine):
                 total_value += position_value
                 current_day_holdings[h_ticker] = h_quantity
             
+            daily_holdings_and_cash_list.append(current_day_holdings)
             portfolio_values.append((current_date, total_value))
-            daily_holdings_and_cash_list.append(current_day_holdings) # Store daily holdings and cash
-            
-            # Print only on the first trading day of the month to reduce clutter
-            if last_month != current_date.month:
-                holdings_str = {k: v for k, v in holdings.items() if v > 0}
-                print(f"{current_date}: Portfolio Value - {total_value:.2f}, Cash - {cash:.2f}, Holdings - {holdings_str}")
-                last_month = current_date.month
+            # print(f"{current_date}: Portfolio Value - {total_value:.2f}") # Debug print portfolio each day
 
         portfolio_values_df = pd.DataFrame(portfolio_values, columns=["Date", "Portfolio Value"]).set_index("Date")
         daily_holdings_and_cash_df = pd.DataFrame(daily_holdings_and_cash_list).set_index("Date").fillna(0)
