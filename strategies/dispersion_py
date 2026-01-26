@@ -1,0 +1,201 @@
+"""Template for new trading strategies. Copy this and make your own strategy!"""
+import pandas as pd
+from typing import List, Dict, Any
+
+from strategies.order_generator import OrderGenerator
+
+class DispersionStrategy(OrderGenerator):
+    """
+    High minus low earnings-dispersion strategy.
+    
+    Assumptions:
+    - data is a dict: {ticker: DataFrame}
+    - Each DataFrame has:
+        - DatetimeIndex
+        - 'Adj Close' column for prices
+        - 'dispersion' column with EPS forecast dispersion for that date
+          (e.g. std(analyst EPS) / |mean(analyst EPS)|, already cleaned).
+    - We rebalance on a fixed calendar frequency (e.g. monthly-end: 'ME')
+      and hold positions until the next rebalance date.
+    """
+    
+    def _init_(
+        self,
+        rebalance_frequency: str = 'ME',          # monthly end rebalancing
+        starting_portfolio_value: float = 100000, # total notional for sizing
+        top_fraction: float = 0.1,                # top X% dispersion = long
+        bottom_fraction: float = 0.1,             # bottom X% dispersion = short
+        long_notional_fraction: float = 0.5,      # fraction of capital to long side
+        short_notional_fraction: float = 0.5      # fraction of capital to short side
+    ):
+        self.rebalance_frequency = rebalance_frequency
+        self.starting_portfolio_value = starting_portfolio_value
+        self.top_fraction = top_fraction
+        self.bottom_fraction = bottom_fraction
+        self.long_notional_fraction = long_notional_fraction
+        self.short_notional_fraction = short_notional_fraction
+
+    def _get_rebalance_dates(self, data: Dict[str, pd.DataFrame]) -> pd.DatetimeIndex:
+        """
+        Build a calendar of rebalance dates from the union of all ticker dates.
+        """
+        all_dates = set()
+        for df in data.values():
+            all_dates.update(df.index)
+        if not all_dates:
+            return pd.DatetimeIndex([])
+
+        all_dates = sorted(all_dates)
+        start_date, end_date = all_dates[0], all_dates[-1]
+
+        # Note: pandas uses 'M' for month-end; 'ME' may work as an alias in recent versions.
+        rebalance_dates = pd.date_range(
+            start=start_date,
+            end=end_date,
+            freq=self.rebalance_frequency
+        )
+        return rebalance_dates
+
+    def _build_cross_section_for_date(
+        self,
+        data: Dict[str, pd.DataFrame],
+        date: pd.Timestamp
+    ) -> (pd.Series, Dict[str, float]):
+        """
+        For a given rebalance date, pull the latest available dispersion and price
+        for each ticker as of that date.
+        
+        Returns:
+        - dispersion Series: index=ticker, values=dispersion
+        - prices dict: {ticker: price_at_date}
+        """
+        dispersions = {}
+        prices = {}
+
+        for ticker, df in data.items():
+            if 'dispersion' not in df.columns or 'Adj Close' not in df.columns:
+                continue
+
+            # Use information available up to and including date
+            sub = df.loc[:date]
+            if sub.empty:
+                continue
+
+            disp_val = sub['dispersion'].iloc[-1]
+            price_val = sub['Adj Close'].iloc[-1]
+
+            if pd.isna(disp_val) or pd.isna(price_val):
+                continue
+
+            dispersions[ticker] = disp_val
+            prices[ticker] = float(price_val)
+
+        if len(dispersions) == 0:
+            return pd.Series(dtype=float), {}
+
+        disp_series = pd.Series(dispersions)
+        return disp_series, prices
+
+    def _generate_orders_for_date(
+        self,
+        disp_series: pd.Series,
+        prices: Dict[str, float],
+        date: pd.Timestamp
+    ) -> List[Dict[str, Any]]:
+        """
+        Given cross-sectional dispersion and prices at date, build
+        long–short orders.
+        """
+        orders: List[Dict[str, Any]] = []
+
+        # Basic guardrails
+        disp_series = disp_series.dropna()
+        n = len(disp_series)
+        if n < 10:
+            # not enough names to form meaningful deciles
+            return orders
+
+        # Sort by dispersion: low → high
+        sorted_disp = disp_series.sort_values()
+
+        # Determine group sizes
+        low_size = max(int(n * self.bottom_fraction), 1)
+        high_size = max(int(n * self.top_fraction), 1)
+
+        low_tickers = sorted_disp.head(low_size).index.tolist()
+        high_tickers = sorted_disp.tail(high_size).index.tolist()
+
+        if len(low_tickers) == 0 or len(high_tickers) == 0:
+            return orders
+
+        # Dollar allocations
+        long_notional = self.starting_portfolio_value * self.long_notional_fraction
+        short_notional = self.starting_portfolio_value * self.short_notional_fraction
+
+        per_stock_long = long_notional / len(high_tickers)
+        per_stock_short = short_notional / len(low_tickers)
+
+        # Long high dispersion
+        for ticker in high_tickers:
+            price = prices[ticker]
+            if price <= 0:
+                continue
+            quantity = int(per_stock_long / price)
+            if quantity <= 0:
+                continue
+            orders.append({
+                "date": date,
+                "type": "BUY",
+                "ticker": ticker,
+                "quantity": quantity
+            })
+            print(f"[{date.date()}] DISP: BUY  {ticker}  qty={quantity}  price={price:.2f}")
+
+        # Short low dispersion
+        for ticker in low_tickers:
+            price = prices[ticker]
+            if price <= 0:
+                continue
+            quantity = int(per_stock_short / price)
+            if quantity <= 0:
+                continue
+            orders.append({
+                "date": date,
+                "type": "SELL",
+                "ticker": ticker,
+                "quantity": quantity
+            })
+            print(f"[{date.date()}] DISP: SELL {ticker}  qty={quantity}  price={price:.2f}")
+
+        return orders
+
+    def generate_orders(self, data: Dict[str, pd.DataFrame]) -> List[Dict[str, Any]]:
+        """
+        Main entry point (required by OrderGenerator).
+        
+        Parameters
+        ----------
+        data : Dict[str, pd.DataFrame]
+            Mapping from ticker to DataFrame with columns:
+            - 'Adj Close'
+            - 'dispersion' (EPS forecast dispersion)
+        
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of order dicts with keys: date, type, ticker, quantity.
+        """
+        all_orders: List[Dict[str, Any]] = []
+
+        rebalance_dates = self._get_rebalance_dates(data)
+        if len(rebalance_dates) == 0:
+            return all_orders
+
+        for date in rebalance_dates:
+            disp_series, prices = self._build_cross_section_for_date(data, date)
+            if disp_series.empty:
+                continue
+            daily_orders = self._generate_orders_for_date(disp_series, prices, date)
+            all_orders.extend(daily_orders)
+
+        return all_orders
