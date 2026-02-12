@@ -94,7 +94,7 @@ class ExtendedMetrics(Metrics):
         cumulative_returns = (1 + returns).cumprod() - 1
         
         # Plot Strategy
-        plt.plot(cumulative_returns.index, cumulative_returns, label="Momentum Strategy", linewidth=2, color='#1f77b4') # Blue
+        plt.plot(cumulative_returns.index, cumulative_returns, label=title, linewidth=2, color='#1f77b4') # Blue
         
         if benchmark_returns is not None:
             # Align benchmark to portfolio dates and fill missing with 0 returns
