@@ -38,12 +38,17 @@ python backtester/cache_sp500_data.py
 
 ### 2. Run the Main Script
 
-Once data is cached, run the sample mean reversion strategy:
+Once data is cached, run the interactive strategy backtester:
 ```sh
 python main.py
 ```
 
-This will backtest a simple mean reversion strategy on SPY (2011-2024) and display performance metrics.
+You will be prompted to:
+1. **Select a strategy** — Mean Reversion, Momentum, or Pairs Trading
+2. **Enter tickers** and a date range (or use defaults)
+3. **Configure strategy parameters** (e.g., lookback window, pairs)
+
+The script will run the backtest, print monthly portfolio holdings, display performance metrics, and plot cumulative returns against the S&P 500.
 
 ## Running Sample Research Notebooks
 
