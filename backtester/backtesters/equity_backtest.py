@@ -59,11 +59,8 @@ class EquityBacktestEngine(BacktestEngine):
                         quantity = int(current_holding * raw_quantity)
                     else:
                         quantity = raw_quantity
-                    
-                    # Ensure we don't sell more than we have (unless shorting is supported, assuming long-only logic here for safety or capped at 0)
-                    available = holdings.get(ticker, 0)
-                    quantity = min(quantity, available)
-                    
+
+                    # Allow short selling — holdings can go negative
                     proceeds = price * quantity
                     cash += proceeds
                     holdings[ticker] = holdings.get(ticker, 0) - quantity

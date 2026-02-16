@@ -8,7 +8,7 @@ if __name__ == "__main__":
 
 from backtester.data_source import YahooFinanceDataSource, PickleDataSource
 from strategies.mean_reversion import MeanReversionOrderGenerator
-from backtester.momentum_strategy import MomentumOrderGenerator
+from strategies.momentum_strategy import MomentumOrderGenerator
 from strategies.pairs_trading import PairsTradingOrderGenerator
 from backtester.backtesters.equity_backtest import EquityBacktestEngine
 from backtester.metrics import ExtendedMetrics
