@@ -17,7 +17,7 @@ class MomentumOrderGenerator(OrderGenerator):
         in_position: Dict[str, bool] = {ticker: False for ticker in tickers}
 
         for ticker in tickers: # parallelize tickers (bad when large)
-            
+
             ticker_data = data[ticker].to_frame(name='Adj Close')
             ticker_data['52_week_high'] = (
                 ticker_data['Adj Close']
