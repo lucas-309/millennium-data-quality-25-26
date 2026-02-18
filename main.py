@@ -124,7 +124,7 @@ def main():
     print(data.head())
 
     # Run backtest
-    backtest_engine = EquityBacktestEngine(initial_cash=100000)
+    backtest_engine = EquityBacktestEngine(initial_cash=100000, commission_rate=0.001)
     orders = order_generator.generate_orders(data)
 
     if not orders:
@@ -133,6 +133,7 @@ def main():
     backtest_results = backtest_engine.run_backtest(orders, data)
     portfolio_values = backtest_results["portfolio_values"]["Portfolio Value"]
     daily_holdings_and_cash = backtest_results["daily_holdings_and_cash"]
+    total_transaction_costs = backtest_results["total_transaction_costs"]
 
     if portfolio_values.empty:
         print("Error: Portfolio values empty. Cannot calculate metrics.")
@@ -165,6 +166,7 @@ def main():
     metrics = metrics_calculator.calculate(portfolio_values, returns, benchmark_returns, data, daily_holdings_and_cash)
 
     print(f"\n### Backtest Metrics ({STRATEGIES[choice]}):")
+    print(f"  -> Total Transaction Costs: ${total_transaction_costs:,.2f}")
     for metric, value in metrics.items():
         print(f"  -> {metric}: {value:.2f}")
 

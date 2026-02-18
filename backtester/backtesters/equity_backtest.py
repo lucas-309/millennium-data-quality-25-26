@@ -5,10 +5,19 @@ from typing import List, Dict, Any
 from .backtest_engine import BacktestEngine
 
 class EquityBacktestEngine(BacktestEngine):
-    """Equities (long/short) backtest engine implementation without slippage or transaction costs."""
+    """Equities (long/short) backtest engine implementation with configurable transaction costs."""
+
+    def __init__(self, initial_cash: float, commission_rate: float = 0.0, flat_fee_per_trade: float = 0.0):
+        super().__init__(initial_cash)
+        self.commission_rate = commission_rate
+        self.flat_fee_per_trade = flat_fee_per_trade
+
+    def _calculate_transaction_cost(self, trade_value: float) -> float:
+        return self.flat_fee_per_trade + self.commission_rate * trade_value
 
     def run_backtest(self, orders: List[Dict[str, Any]], data: pd.DataFrame) -> Dict[str, Any]:
         cash = self.initial_cash
+        total_transaction_costs = 0.0
         holdings = {}
         portfolio_values = []
         daily_holdings_and_cash_list = [] # New list to store daily holdings and cash
@@ -40,16 +49,15 @@ class EquityBacktestEngine(BacktestEngine):
                         quantity = int(target_value // price)
                     else:
                         quantity = raw_quantity
-                        
-                    cost = price * quantity
-                    if cash >= cost: # Ensure we have enough cash
-                        cash -= cost
+
+                    trade_value = price * quantity
+                    txn_cost = self._calculate_transaction_cost(trade_value)
+                    total_cost = trade_value + txn_cost
+                    if cash >= total_cost:
+                        cash -= total_cost
                         holdings[ticker] = holdings.get(ticker, 0) + quantity
+                        total_transaction_costs += txn_cost
                     else:
-                        # Optional: Buy as much as possible? For now, skip or partial fill could be implemented.
-                        # Implementing partial fill to utilize remaining cash if dynamic sizing slightly overshot due to gaps
-                        # actually for this simple engine, if fixed size fails, we skip. 
-                        # if dynamic sizing, it calculates based on PV, but checking vs cash is safest.
                         pass
 
                 elif order["type"] == "SELL":
@@ -61,9 +69,12 @@ class EquityBacktestEngine(BacktestEngine):
                         quantity = raw_quantity
 
                     # Allow short selling — holdings can go negative
-                    proceeds = price * quantity
+                    trade_value = price * quantity
+                    txn_cost = self._calculate_transaction_cost(trade_value)
+                    proceeds = trade_value - txn_cost
                     cash += proceeds
                     holdings[ticker] = holdings.get(ticker, 0) - quantity
+                    total_transaction_costs += txn_cost
 
                 order_index += 1
 
@@ -82,4 +93,8 @@ class EquityBacktestEngine(BacktestEngine):
 
         portfolio_values_df = pd.DataFrame(portfolio_values, columns=["Date", "Portfolio Value"]).set_index("Date")
         daily_holdings_and_cash_df = pd.DataFrame(daily_holdings_and_cash_list).set_index("Date").fillna(0)
-        return {"portfolio_values": portfolio_values_df, "daily_holdings_and_cash": daily_holdings_and_cash_df}
+        return {
+            "portfolio_values": portfolio_values_df,
+            "daily_holdings_and_cash": daily_holdings_and_cash_df,
+            "total_transaction_costs": total_transaction_costs,
+        }
