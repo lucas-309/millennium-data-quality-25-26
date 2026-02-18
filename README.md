@@ -2,7 +2,7 @@
 
 A backtesting framework for quantitative trading strategies with support for equity portfolios, performance metrics, and strategy evaluation.
 
-📖 **For detailed documentation on the framework architecture, file structure, and creating custom strategies, see [GUIDE.md](GUIDE.md).**
+📖 **For detailed documentation on the framework architecture, file structure, and creating custom strategies, see [GUIDE.md](guide.md).**
 
 ## Installation
 
