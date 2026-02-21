@@ -43,10 +43,15 @@ class EquityBacktestEngine(BacktestEngine):
                 quantity = 0
                 
                 if order["type"] == "BUY":
-                    # Dynamic sizing: 0 < quantity <= 1.0 implies percentage of portfolio value
                     if isinstance(raw_quantity, float) and 0 < raw_quantity <= 1.0:
-                        target_value = current_portfolio_value * raw_quantity
-                        quantity = int(target_value // price)
+                        current_holding = holdings.get(ticker, 0)
+                        if current_holding < 0:
+                            # Covering a short: buy back raw_quantity fraction of shorted shares
+                            quantity = int(abs(current_holding) * raw_quantity)
+                        else:
+                            # Opening/adding long: percentage of portfolio value
+                            target_value = current_portfolio_value * raw_quantity
+                            quantity = int(target_value // price)
                     else:
                         quantity = raw_quantity
 
@@ -61,10 +66,15 @@ class EquityBacktestEngine(BacktestEngine):
                         pass
 
                 elif order["type"] == "SELL":
-                    # Dynamic sizing: 0 < quantity <= 1.0 implies percentage of CURRENT HOLDINGS
                     if isinstance(raw_quantity, float) and 0 < raw_quantity <= 1.0:
                         current_holding = holdings.get(ticker, 0)
-                        quantity = int(current_holding * raw_quantity)
+                        if current_holding > 0:
+                            # Closing/reducing long: sell raw_quantity fraction of holdings
+                            quantity = int(current_holding * raw_quantity)
+                        else:
+                            # Opening/adding short: percentage of portfolio value
+                            target_value = current_portfolio_value * raw_quantity
+                            quantity = int(target_value // price)
                     else:
                         quantity = raw_quantity
 
