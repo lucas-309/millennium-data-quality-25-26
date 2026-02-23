@@ -8,3 +8,4 @@ __pycache__/
 momentum_vs_spy.png
 backtester/momentum_vs_spy.png
 *.xlsx
+data_quality_materials/
