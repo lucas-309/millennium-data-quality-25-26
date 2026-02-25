@@ -13,7 +13,7 @@ class EquityBacktestEngine(BacktestEngine):
         self.flat_fee_per_trade = flat_fee_per_trade
 
     def _calculate_transaction_cost(self, trade_value: float) -> float:
-        return self.flat_fee_per_trade + self.commission_rate * trade_value
+        return self.flat_fee_per_trade + self.commission_rate * abs(trade_value)
 
     def run_backtest(self, orders: List[Dict[str, Any]], data: pd.DataFrame) -> Dict[str, Any]:
         cash = self.initial_cash
