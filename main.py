@@ -10,6 +10,7 @@ from backtester.data_source import YahooFinanceDataSource, PickleDataSource
 from strategies.mean_reversion import MeanReversionOrderGenerator
 from strategies.momentum_strategy import MomentumOrderGenerator
 from strategies.pairs_trading import PairsTradingOrderGenerator
+from strategies.betting_against_beta import BettingAgainstBetaOrderGenerator
 from backtester.backtesters.equity_backtest import EquityBacktestEngine
 from backtester.metrics import ExtendedMetrics
 
@@ -17,6 +18,7 @@ STRATEGIES = {
     "1": "Mean Reversion",
     "2": "Momentum",
     "3": "Pairs Trading",
+    "4": "Betting Against Beta",
 }
 
 
@@ -48,16 +50,20 @@ def prompt_dates():
 
 def build_strategy(choice, tickers):
     if choice == "1":
-        print(">> Mean Reversion (100-day rolling window)")
-        return MeanReversionOrderGenerator(), tickers
+        lookback = input("Lookback window days (default: 100): ").strip()
+        entry_z = input("Entry z-score threshold (default: -1.5): ").strip()
+        lookback = int(lookback) if lookback else 100
+        entry_z = float(entry_z) if entry_z else -1.5
+        print(f">> Mean Reversion (lookback={lookback}, entry_z={entry_z})")
+        return MeanReversionOrderGenerator(lookback=lookback, entry_zscore=entry_z), tickers
 
     elif choice == "2":
-        window = input("Lookback window days (default: 125): ").strip()
-        threshold = input("Threshold (default: 0.02): ").strip()
-        window = int(window) if window else 125
-        threshold = float(threshold) if threshold else 0.02
-        print(f">> Momentum (window={window}, threshold={threshold})")
-        return MomentumOrderGenerator(window_days=window, threshold=threshold), tickers
+        lookback = input("Lookback window days (default: 252): ").strip()
+        trailing_stop = input("Trailing stop % (default: 0.10): ").strip()
+        lookback = int(lookback) if lookback else 252
+        trailing_stop = float(trailing_stop) if trailing_stop else 0.10
+        print(f">> Momentum (lookback={lookback}, trailing_stop={trailing_stop})")
+        return MomentumOrderGenerator(lookback_days=lookback, trailing_stop_pct=trailing_stop), tickers
 
     elif choice == "3":
         print("Enter pairs as: TICKER1/TICKER2, TICKER3/TICKER4")
@@ -82,9 +88,20 @@ def build_strategy(choice, tickers):
         lookback = int(lookback) if lookback else 60
 
         print(f">> Pairs Trading (pairs={pairs}, lookback={lookback})")
-        return PairsTradingOrderGenerator(
-            pairs=pairs, lookback_window=lookback,
-        ), all_tickers
+        return PairsTradingOrderGenerator(pairs=pairs, lookback_window=lookback), all_tickers
+
+    elif choice == "4":
+        lookback = input("Beta lookback period (default: 252): ").strip()
+        lookback = int(lookback) if lookback else 252
+        print(f">> Betting Against Beta (lookback={lookback})")
+
+        # BAB needs SPY + many tickers for cross-sectional beta ranking
+        all_tickers = list(tickers)
+        if "SPY" not in all_tickers:
+            all_tickers.append("SPY")
+        print("  Note: BAB works best with many tickers (e.g., full S&P 500 via cache).")
+
+        return BettingAgainstBetaOrderGenerator(lookback_period=lookback), all_tickers
 
     else:
         print("Invalid choice.")
@@ -96,7 +113,7 @@ def main():
     for key, name in STRATEGIES.items():
         print(f"  {key}. {name}")
 
-    choice = input("\nSelect a strategy [1-3]: ").strip()
+    choice = input("\nSelect a strategy [1-4]: ").strip()
     if choice not in STRATEGIES:
         print("Invalid selection.")
         return
@@ -140,6 +157,19 @@ def main():
 
     returns = portfolio_values.pct_change().dropna()
 
+    # Engine stats
+    print(f"\n### Execution Summary:")
+    print(f"  Trades executed: {backtest_results['trade_count']}")
+    print(f"  Total commissions: ${backtest_results['total_commissions']:,.2f}")
+    print(f"  Total slippage cost: ${backtest_results['total_slippage_cost']:,.2f}")
+    order_log = backtest_results["order_log"]
+    if not order_log.empty:
+        rejected = order_log[order_log["status"] == "REJECTED"]
+        if len(rejected) > 0:
+            print(f"  Orders rejected: {len(rejected)}")
+            for reason, count in rejected["reason"].value_counts().items():
+                print(f"    - {reason}: {count}")
+
     # Benchmark
     benchmark_data = data_source.get_historical_data(["SPY"], start_date, end_date)
     if benchmark_data.empty:
@@ -166,7 +196,10 @@ def main():
 
     print(f"\n### Backtest Metrics ({STRATEGIES[choice]}):")
     for metric, value in metrics.items():
-        print(f"  -> {metric}: {value:.2f}")
+        if isinstance(value, float) and not (pd.isna(value) or abs(value) == float('inf')):
+            print(f"  -> {metric}: {value:.4f}")
+        else:
+            print(f"  -> {metric}: {value}")
 
     metrics_calculator.plot_returns(returns, benchmark_returns=benchmark_returns, title=f"{STRATEGIES[choice]} vs S&P 500")
 
