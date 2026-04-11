@@ -203,35 +203,43 @@ class SectorNeutralDividendYieldStrategy(SignalStrategy):
         return _sector_neutral_zscore(raw_scores, dataset.metadata)
 
 
+class CrossSectionalMomentumStrategy(SignalStrategy):
+    name = "Cross-Sectional Momentum"
+    motivation = "Rank stocks by medium-term return, long the top names."
+    economic_rationale = "Medium-term winners continue to outperform due to slow information diffusion and underreaction to fundamentals."
+    why_it_works = "12-1 momentum is the most persistent cross-sectional anomaly in equities across decades and markets."
+    why_it_fails = "Crashes during sharp reversals and regime changes (e.g. March 2009)."
+
+    def __init__(self, lookback_days: int = 126, skip_days: int = 21):
+        self.lookback_days = lookback_days
+        self.skip_days = skip_days
+
+    def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
+        prices = dataset.prices
+        return prices.shift(self.skip_days).div(prices.shift(self.lookback_days)) - 1.0
+
+
+class LowVolatilityStrategy(SignalStrategy):
+    name = "Low Volatility"
+    motivation = "Hold the lowest-volatility names, exploiting the low-vol anomaly."
+    economic_rationale = "Leverage constraints and lottery preference cause low-vol stocks to be chronically underpriced relative to their risk-adjusted returns."
+    why_it_works = "Low-vol long-only portfolios have matched or beaten broad equity returns with significantly smaller drawdowns across many decades."
+    why_it_fails = "Underperforms speculative rallies and rotation toward high-beta growth names."
+
+    def __init__(self, window: int = 126):
+        self.window = window
+
+    def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
+        vol = dataset.returns.rolling(self.window, min_periods=self.window // 2).std()
+        return -vol  # higher score = lower vol = more desirable
+
+
 def build_default_strategy_suite() -> list[SignalStrategy]:
     return [
         SmallCapTiltStrategy(),
         ValueCompositeStrategy(),
         EarningsRevisionStrategy(),
         SectorNeutralDividendYieldStrategy(),
-    ]
-
-
-def build_elite_strategy_suite() -> list[SignalStrategy]:
-    """Millennium-grade strategy suite with residual momentum, quality, trend, PEAD, etc.
-
-    Includes the default value/quality/dividend strategies plus the new
-    factor-neutral alphas. Gives you a diversified multi-pod book.
-    """
-    from strategies.residual_momentum import ResidualMomentumStrategy
-    from strategies.idio_reversal import IdiosyncraticReversalStrategy
-    from strategies.trend_following import TrendFollowingStrategy
-    from strategies.quality import QualityStrategy
-    from strategies.pead import PEADStrategy
-
-    return [
-        SmallCapTiltStrategy(),
-        ValueCompositeStrategy(),
-        EarningsRevisionStrategy(),
-        SectorNeutralDividendYieldStrategy(),
-        ResidualMomentumStrategy(),
-        IdiosyncraticReversalStrategy(),
-        TrendFollowingStrategy(),
-        QualityStrategy(),
-        PEADStrategy(),
+        CrossSectionalMomentumStrategy(),
+        LowVolatilityStrategy(),
     ]
