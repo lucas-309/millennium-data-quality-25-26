@@ -1,65 +1,99 @@
-from .order_generator import OrderGenerator
 import pandas as pd
 from typing import List, Dict, Any
 
+from .order_generator import OrderGenerator
+
+
 class MomentumOrderGenerator(OrderGenerator):
-    def __init__(self, window_days: int = 125, threshold: float = 0.02):
-        self.window_days = window_days
-        self.threshold = threshold
+    """Momentum strategy with trailing stop and momentum decay exit.
+
+    Enters when price is near its rolling high (breakout), exits via trailing
+    stop-loss or momentum decay (no new high in N days).
+    """
+
+    def __init__(
+        self,
+        lookback_days: int = 252,
+        entry_threshold: float = 0.02,
+        trailing_stop_pct: float = 0.10,
+        allocation_per_trade: float = 0.15,
+        max_positions: int = 4,
+        momentum_decay_days: int = 20,
+    ):
+        self.lookback_days = lookback_days
+        self.entry_threshold = entry_threshold
+        self.trailing_stop_pct = trailing_stop_pct
+        self.allocation_per_trade = allocation_per_trade
+        self.max_positions = max_positions
+        self.momentum_decay_days = momentum_decay_days
 
     def generate_orders(self, data: pd.DataFrame) -> List[Dict[str, Any]]:
         orders: List[Dict[str, Any]] = []
+        prices = data.sort_index()
+        tickers = list(prices.columns)
+        rolling_high = prices.rolling(window=self.lookback_days).max().shift(1)
+        momentum_strength = prices.div(prices.shift(self.lookback_days)) - 1.0
 
-        # Use columns from data (or keep your own list)
-        tickers = list(data.columns)   # assuming columns are like "AAPL", "NVDA"
+        # ticker -> {peak, days_since_new_high}
+        position_state: Dict[str, dict] = {ticker: None for ticker in tickers}
 
-        # Track position state per ticker
-        in_position: Dict[str, bool] = {ticker: False for ticker in tickers}
+        for date in prices.index:
+            day_prices = prices.loc[date]
+            day_highs = rolling_high.loc[date]
 
-        for ticker in tickers: # parallelize tickers (bad when large)
-
-            ticker_data = data[ticker].to_frame(name='Adj Close')
-            ticker_data['52_week_high'] = (
-                ticker_data['Adj Close']
-                .rolling(window=self.window_days)
-                .max()
-                .shift(1)
-            )
-            ticker_data['52_week_low'] = (
-                ticker_data['Adj Close']
-                .rolling(window=self.window_days)
-                .min()
-                .shift(1)
-            )
-
-            for date, row in ticker_data.iterrows():
-                if pd.isna(row['52_week_high']) or pd.isna(row['52_week_low']):
+            # Process exits first.
+            for ticker in tickers:
+                state = position_state[ticker]
+                price = day_prices.get(ticker)
+                high = day_highs.get(ticker)
+                if state is None or pd.isna(price) or pd.isna(high):
                     continue
 
-                price = row['Adj Close']
-                high_target = row['52_week_high']
-                low_target = row['52_week_low']
+                if price > state["peak"]:
+                    state["peak"] = price
+                    state["days_since_new_high"] = 0
+                else:
+                    state["days_since_new_high"] += 1
 
-                # BUY: near prior-window high
-                if (not in_position[ticker]) and price >= high_target * (1 - self.threshold):
-                    orders.append({
-                        "date": date,
-                        "type": "BUY",
-                        "ticker": ticker,
-                        "quantity": 0.3,  # 30% of portfolio
-                    })
-                    in_position[ticker] = True
+                should_exit = (
+                    price <= state["peak"] * (1 - self.trailing_stop_pct)
+                    or state["days_since_new_high"] >= self.momentum_decay_days
+                )
 
-                # SELL: near prior-window low
-                elif in_position[ticker] and price <= low_target * (1 + self.threshold):
+                if should_exit:
                     orders.append({
                         "date": date,
                         "type": "SELL",
                         "ticker": ticker,
-                        "quantity": 1.0,  # 100% of holdings
+                        "quantity": 1.0,
                     })
-                    in_position[ticker] = False
+                    position_state[ticker] = None
 
-        orders.sort(key=lambda o: (o["date"], o["ticker"], o["type"]))
+            open_positions = sum(state is not None for state in position_state.values())
+            available_slots = max(self.max_positions - open_positions, 0)
+            if available_slots == 0:
+                continue
 
+            entry_mask = (day_prices >= day_highs * (1 - self.entry_threshold)) & day_prices.notna() & day_highs.notna()
+            candidates = momentum_strength.loc[date][entry_mask].dropna().sort_values(ascending=False)
+
+            for ticker, _ in candidates.items():
+                if available_slots == 0:
+                    break
+                if position_state[ticker] is not None:
+                    continue
+
+                orders.append({
+                    "date": date,
+                    "type": "BUY",
+                    "ticker": ticker,
+                    "quantity": float(self.allocation_per_trade),
+                })
+                position_state[ticker] = {
+                    "peak": float(day_prices[ticker]),
+                    "days_since_new_high": 0,
+                }
+                available_slots -= 1
+
+        orders.sort(key=lambda o: o["date"])
         return orders
