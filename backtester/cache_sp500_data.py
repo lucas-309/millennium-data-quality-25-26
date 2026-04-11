@@ -2,6 +2,7 @@ import pandas as pd
 import yfinance as yf
 import pickle
 import requests
+from datetime import datetime
 from io import StringIO
 
 def fetch_sp500_tickers():
@@ -49,7 +50,8 @@ def save_data(data, filename):
 def main():
     tickers = fetch_sp500_tickers()
     start_date = '2010-01-01'
-    end_date = '2024-11-20'
+    end_date = datetime.today().strftime('%Y-%m-%d')
+    print(f"Fetching S&P 500 data from {start_date} to {end_date}")
     data = download_data(tickers, start_date, end_date)
     vwap_data = calculate_vwap(data)
     save_data(vwap_data, 'sp500_data.pkl')
