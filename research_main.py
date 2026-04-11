@@ -18,10 +18,7 @@ from backtester.stress_test import regime_report, worst_drawdowns
 from backtester.monte_carlo import bootstrap_many_metrics
 from backtester.tearsheet import generate_tearsheet
 from backtester.multi_strategy import combine_strategy_returns
-from strategies.research_strategies import (
-    build_default_strategy_suite,
-    build_elite_strategy_suite,
-)
+from strategies.research_strategies import build_default_strategy_suite
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -42,11 +39,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="research_outputs")
     parser.add_argument("--skip-spy-validation", action="store_true")
 
-    # === NEW: Strategy suite selection ===
-    parser.add_argument(
-        "--strategy-suite", default="elite", choices=["default", "elite"],
-        help="Which strategy roster to run. 'elite' adds residual momentum, quality, trend, etc.",
-    )
 
     # === NEW: Stress testing ===
     parser.add_argument("--stress-test", action="store_true",
@@ -199,10 +191,7 @@ def main() -> None:
         end_date=args.end_date,
     )
 
-    if args.strategy_suite == "elite":
-        strategies = build_elite_strategy_suite()
-    else:
-        strategies = build_default_strategy_suite()
+    strategies = build_default_strategy_suite()
 
     config = BacktestConfig(
         construction_method=args.construction_method,
