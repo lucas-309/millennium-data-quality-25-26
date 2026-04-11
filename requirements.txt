@@ -2,6 +2,11 @@ matplotlib
 numpy==2.1.3
 pandas==2.2.3
 yfinance==0.2.38
-# for fast data loading/ recall
-pyarrow 
+# for fast data loading / recall
+pyarrow
 fastparquet
+# for reading SPY holdings .xlsx
+openpyxl
+# for fetching S&P500 ticker table from Wikipedia
+requests
+lxml
