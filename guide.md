@@ -1,95 +1,161 @@
 # Project Guide
 
 ## Project Structure
+
 ```
-millennium-data-quality/
-├── main.py                          # Entry point - run backtests here
-├── research_main.py                 # Research-grade signal suite entry point
+millennium-data-quality-25-26/
+├── run_book.py                           # THE deliverable — 5-sleeve alpha book
+├── research_main.py                      # Research pipeline CLI entry point
+├── PROJECT_PLAN.md                       # Research workflow / presentation plan
+├── PRESENTATION_NOTES.md                 # Notes for the research deck
+├── SESSION_NOTES.md                      # This session's arc, mistakes, improvements
+│
 ├── backtester/
-│   ├── data_source.py               # Fetch market data (Yahoo / Pickle / Wharton)
-│   ├── metrics.py                   # Performance metrics
-│   ├── cache_sp500_data.py          # Download & cache data
-│   ├── research_data.py             # Research dataset loader (Wharton)
-│   ├── research_backtester.py       # Weight-based research backtester
-│   └── backtesters/
-│       ├── backtest_engine.py       # Base class
-│       ├── equity_backtest.py       # Default order-based engine
-│       └── template_engine.py       # Duplicate to create new engines
-└── strategies/
-    ├── order_generator.py           # Base class for order-based strategies
-    ├── mean_reversion.py            # Z-score mean reversion
-    ├── momentum_strategy.py         # 52-week breakout momentum
-    ├── pairs_trading.py             # Statistical arbitrage pairs
-    ├── betting_against_beta.py      # BAB (long low-beta, short high-beta)
-    ├── dispersion.py                # Earnings dispersion (needs external data)
-    ├── research_strategies.py       # Signal-score strategies (research framework)
-    └── template_strategy.py         # Duplicate to create new strategies
+│   ├── WhartonDataSource.parquet         # Local 165-ticker SP500 daily data (2000-2025)
+│   ├── data_source.py                    # WhartonDataSource, YahooFinanceDataSource, PickleDataSource
+│   ├── research_data.py                  # ResearchDataset loader (prices, returns, volumes, events)
+│   ├── research_backtester.py            # Weight-based backtester, lag tables, event studies
+│   ├── research_reports.py               # Data quality, SPY validation, CSV/plot exports
+│   │
+│   ├── metrics.py                        # Sharpe, Sortino, Calmar, alpha/beta, IR, win rate
+│   ├── execution.py                      # Market impact models, borrow costs, ADV caps
+│   ├── risk_manager.py                   # Pre-trade limits, drawdown kill-switch, vol targeting
+│   │
+│   ├── alpha_research.py                 # IC, quantile returns, decay, orthogonalization
+│   ├── factor_models.py                  # Rolling CAPM, residualization, factor attribution
+│   ├── walk_forward.py                   # Purged K-fold CV, deflated Sharpe, PBO
+│   │
+│   ├── portfolio_optimizer.py            # Mean-variance, risk parity, HRP, shrinkage cov
+│   ├── multi_strategy.py                 # Combine strategy returns (equal/risk-parity/hrp)
+│   │
+│   ├── stress_test.py                    # 10 historical crisis regimes
+│   ├── monte_carlo.py                    # Stationary block bootstrap CIs
+│   ├── sensitivity.py                    # Parameter grid sweeps
+│   │
+│   ├── tearsheet.py                      # 6-panel pyfolio-style PNG report
+│   └── attribution.py                    # Factor attribution, Brinson, contribution ranking
+│
+├── strategies/
+│   └── research_strategies.py            # 6 SignalStrategy classes for the research framework
+│                                         # (Small-Cap Tilt, Value Composite, Earnings Revision,
+│                                         #  Sector-Neutral Dividend Yield, Cross-Sectional
+│                                         #  Momentum, Low Volatility)
+│
+├── unit_tests/                           # 88 tests covering every module above
+│   ├── test_alpha_research.py
+│   ├── test_execution.py
+│   ├── test_factor_models.py
+│   ├── test_metrics.py
+│   ├── test_portfolio_optimizer.py
+│   ├── test_research_framework.py
+│   ├── test_risk_manager.py
+│   ├── test_stress_test.py
+│   ├── test_tearsheet.py
+│   └── test_walk_forward.py
+│
+└── book_results/                         # run_book.py output directory
+    ├── cumulative_returns.png
+    ├── summary.csv
+    ├── sleeve_correlation.csv
+    ├── stress_regimes.csv
+    └── tearsheets/                       # per-sleeve tearsheet PNGs
 ```
 
-## Creating a New Strategy
+## Architecture Overview
 
-1. Copy `strategies/template_strategy.py` to `strategies/your_strategy.py`
-2. Implement the `generate_orders()` method
-3. In `main.py`, change the import and instantiation to use your new strategy
+### Data layer — `backtester/data_source.py` + `backtester/research_data.py`
+`WhartonDataSource` loads the local parquet, computes split-adjusted and
+total-return reference prices, and exposes per-ticker features (volume,
+dividends, EPS, market cap, announcement dates). `load_wharton_research_dataset`
+pivots that source into aligned cross-sectional panels and returns a
+`ResearchDataset` dataclass.
 
-## Creating a New Backtest Engine
+### Strategies — `strategies/research_strategies.py`
+Each strategy is a `SignalStrategy` subclass that takes a `ResearchDataset` and
+returns a cross-sectional `StrategyOutput` (z-scored per date). They are used
+by `run_book.py` and `research_main.py`.
 
-1. Copy `backtester/backtesters/template_engine.py` to `backtester/backtesters/your_engine.py`
-2. Implement the `run_backtest()` method
-3. In `main.py`, change the import and instantiation to use your new engine
+### Backtest engine — `backtester/research_backtester.py`
+Weight-based backtester: `build_target_weights` turns signal scores into dated
+target weights (equal/inverse_vol/mean_variance, long-short or long-only).
+`run_weight_backtest` applies signal lag, rebalance frequency, transaction
+costs, and produces a full `BacktestResult` with metrics, lag tables, and
+event studies.
 
-## Running a Backtest
+### Alpha research — `backtester/alpha_research.py` + `factor_models.py` + `walk_forward.py`
+Tools to evaluate whether a signal is real: IC, Rank IC, quantile spread, decay
+curves, orthogonalization. Factor neutralization via rolling CAPM and
+residualization. Walk-forward validation with purged K-fold and embargo,
+deflated Sharpe, probability of backtest overfitting.
 
-Follow instructions in [README.md](README.md).
+### Portfolio construction — `backtester/portfolio_optimizer.py` + `multi_strategy.py`
+Mean-variance with turnover penalty, Equal Risk Contribution, Hierarchical
+Risk Parity, Ledoit-Wolf shrinkage covariance. `multi_strategy.combine_strategy_returns`
+blends individual strategy return series via equal/inverse_vol/risk_parity/hrp.
 
-Activate environment, download & cache data, and then run main.py.
+### Reporting — `backtester/tearsheet.py` + `attribution.py` + `stress_test.py` + `monte_carlo.py`
+Tearsheet generator (6-panel PNG), OLS factor attribution, Brinson sector
+attribution, historical regime replays against 10 named drawdown windows
+(Lehman/Flash Crash/EU Debt/China Devaluation/Brexit/Volmageddon/Q4 2018/COVID/
+2022 Rate Shock/SVB), and Politis-Romano stationary block bootstrap CIs.
 
-To switch strategies or engines, update the imports and object instantiations in `main.py`.
+## Creating a New Signal Strategy
 
-## Backtest Engine Parameters
+1. Open `strategies/research_strategies.py`
+2. Add a new class inheriting from `SignalStrategy` (see existing examples)
+3. Implement `generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame`
+4. Optionally override `normalize_scores` for sector-neutral handling
+5. Either include it in `build_default_strategy_suite()` for the research CLI
+   or import it directly in `run_book.py` as a new sleeve
 
-`EquityBacktestEngine` supports realistic trading frictions and risk controls:
+The strategy contract is simple: return a DataFrame with the same shape as
+`dataset.prices` where each cell is the cross-sectional score for that ticker
+on that date. Higher = more desirable.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `initial_cash` | required | Starting portfolio cash |
-| `commission_per_share` | 0.005 | Per-share commission ($/share, Interactive-Brokers-like) |
-| `commission_min` | 1.0 | Minimum commission per order |
-| `slippage_bps` | 5.0 | Execution slippage in basis points (BUY pays more, SELL receives less) |
-| `margin_requirement` | 1.5 | Maintenance margin multiplier for short positions |
-| `max_position_pct` | 0.25 | Maximum fraction of portfolio value any single position can occupy |
+## Running the Alpha Book
 
-The engine returns:
-- `portfolio_values`: Daily portfolio value DataFrame
-- `daily_holdings_and_cash`: Daily position snapshot
-- `order_log`: Every attempted order with status (EXECUTED / REJECTED) and reason
-- `trade_count`, `total_commissions`, `total_slippage_cost`
+```sh
+.venv/bin/python run_book.py --start 2000-01-01 --end 2025-01-01
+```
 
-## Order Quantity Convention
+Key parameters:
+- `--target-vol` (default 0.16): realized vol target for the vol-managed sleeve
+- `--max-leverage` (default 2.0): cap on the vol-managed sleeve's leverage
+- `--sma-window` (default 200): trend filter lookback
+- `--selection-top-pct` (default 0.20): top quantile held in each selection sleeve
+- `--selection-max-pos` (default 0.08): max weight per name in a selection sleeve
 
-- **Integer quantity** (e.g., `100`): absolute share count
-- **Float between 0 and 1** (e.g., `0.15`): percentage-based sizing
-  - For BUY: percentage of current portfolio value
-  - For SELL: percentage of current holdings in that ticker
-  - For opening short positions with no current holdings, percentage of portfolio value
+Outputs to `--output-dir` (default `book_results/`).
 
-## Strategies
+## Running the Research Pipeline
 
-| Strategy | File | Key Parameters |
-|----------|------|----------------|
-| Mean Reversion | `strategies/mean_reversion.py` | `lookback`, `entry_zscore`, `stop_loss_zscore`, `max_positions` |
-| Momentum | `strategies/momentum_strategy.py` | `lookback_days`, `trailing_stop_pct`, `momentum_decay_days` |
-| Pairs Trading | `strategies/pairs_trading.py` | `pairs`, `entry_zscore`, `exit_zscore`, `stop_loss_zscore`, `min_correlation` |
-| Betting Against Beta | `strategies/betting_against_beta.py` | `lookback_period`, `rebalance_frequency`, `decile_fraction` |
-| Dispersion | `strategies/dispersion.py` | Requires external analyst dispersion data |
+```sh
+.venv/bin/python research_main.py --skip-spy-validation \
+  --stress-test --monte-carlo 500 --tearsheet --combine-method hrp
+```
+
+Runs the default signal suite through the research backtester and exports
+strategy summaries, signal correlation matrix, lag tables, event studies,
+tearsheets, stress test results, and Monte Carlo confidence intervals to
+`research_outputs/`.
 
 ## Metrics
 
-`ExtendedMetrics.calculate()` reports:
+`ExtendedMetrics.calculate()` in `backtester/metrics.py` reports:
 - Returns: Avg Daily Return, Cumulative Return, Annualized Return, Log Return
 - Risk: Volatility, Max Drawdown, Sharpe Ratio, Sortino Ratio, Calmar Ratio
 - Benchmark-relative: Beta, Alpha (Jensen's), Information Ratio
 - Trade quality: Win Rate, Profit Factor
 - Activity: Avg Daily Turnover, Annualized Turnover
 
-Configure the annual risk-free rate with `ExtendedMetrics(risk_free_rate=0.05)`.
+Configure the annual risk-free rate via constructor: `ExtendedMetrics(risk_free_rate=0.05)`.
+
+## Running Tests
+
+```sh
+.venv/bin/python -m unittest discover -s unit_tests
+```
+
+88 tests, all passing. Covers alpha_research, execution, factor_models,
+metrics, portfolio_optimizer, research_framework, risk_manager, stress_test,
+tearsheet, and walk_forward.
