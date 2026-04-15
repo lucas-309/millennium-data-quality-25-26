@@ -19,7 +19,7 @@ class PairsTradingOrderGenerator(OrderGenerator):
         lookback_window: int = 60,
         entry_zscore: float = 2.0,
         exit_zscore: float = 0.0,
-        allocation_per_pair: float = 0.15,
+        allocation_per_pair: float = 0.50,
     ):
         self.pairs = pairs
         self.lookback_window = lookback_window
@@ -37,20 +37,31 @@ class PairsTradingOrderGenerator(OrderGenerator):
             price_a = data[ticker_a]
             price_b = data[ticker_b]
 
+            # Require strictly positive prices for a valid log-ratio calculation
+            valid_prices = (price_a > 0) & (price_b > 0)
+            if not valid_prices.any():
+                continue
+
+            price_a = price_a[valid_prices]
+            price_b = price_b[valid_prices]
+
             # Log price ratio
             ratio = np.log(price_a / price_b)
 
             rolling_mean = ratio.rolling(window=self.lookback_window).mean()
-            rolling_std = ratio.rolling(window=self.lookback_window).std()
+            rolling_std = ratio.rolling(window=self.lookback_window).std().replace(0, np.nan)
 
             zscore = (ratio - rolling_mean) / rolling_std
+            zscore = zscore.replace([np.inf, -np.inf], np.nan)
 
             # Track position state for this pair:
             # None = flat, "long_b" = long B / short A, "long_a" = long A / short B
             position = None
 
             for date in data.index:
-                z = zscore.get(date)
+                if date not in zscore.index:
+                    continue
+                z = zscore.loc[date]
                 if z is None or pd.isna(z):
                     continue
 
