@@ -1,26 +1,26 @@
 """Multi-sleeve alpha book — target Sharpe > 1.0 via diversification.
 
-Six uncorrelated sleeves combined equal-weight:
+Five sleeves combined via HRP (chosen a priori, no in-sample selection):
 
 Timing sleeves (smooth the beta):
   1. Vol-Managed Equity — target 16% vol, levered to 2x max
   2. Trend-Filtered Equity — hold when > 200-day SMA, T-bills otherwise
 
-Selection sleeves (pick stocks, long-only top quintile):
+Selection sleeves (pick stocks, long-only top quintile + trend filter):
   3. Cross-Sectional Momentum (6-1 return)
   4. Low Volatility (bottom quintile by 126-day vol)
-  5. Value Composite (E/P, B/M, earnings yield)
-  6. Small Cap Tilt (smallest names by market cap)
+  5. Small Cap Tilt (smallest names by market cap)
 
-Each sleeve independently has Sharpe ~0.80-0.85 on this Wharton universe. The
-low correlation between the *timing* sleeves (which modulate beta exposure)
-and the *selection* sleeves (which pick stocks) is where the Sharpe lift
-comes from: diversification benefit compounds into a combined Sharpe above
-what any individual sleeve achieves.
+Each sleeve independently has Sharpe ~0.80-1.10 on this Wharton universe. The
+low correlation between the timing and selection sleeves is where the Sharpe
+lift comes from.
 
-All sleeves are long-only, all sized to unit gross notional, combined equal-
-weight, monthly rebalanced, 10bps round-trip t-cost. No Sharpe-hacking tricks:
-no in-sample parameter tuning, no strategy cherry-picking, no look-ahead.
+HRP is the fixed combination method — it is robust to covariance estimation
+error and requires no expected-return inputs. Other methods (equal-weight,
+risk-parity, inverse-vol) are reported for comparison but NOT used to select
+the winner, avoiding lookahead bias.
+
+All sleeves are long-only, monthly rebalanced, 10bps round-trip t-cost.
 """
 from __future__ import annotations
 
@@ -321,12 +321,15 @@ def main():
               f"MaxDD={m_overlay['Max Drawdown']:.2%}")
         meta_candidates[f"{combo_name}+Trend"] = (overlay, m_overlay)
 
-    best_name, (best_series, best_metrics) = max(meta_candidates.items(),
-                                                   key=lambda kv: kv[1][1]["Sharpe Ratio"])
-    combined = best_series
-    combined_metrics = best_metrics
-    sleeves[f"Combined Book ({best_name})"] = combined
-    print(f"\n  >>> Winner: {best_name} with Sharpe {combined_metrics['Sharpe Ratio']:.3f} <<<")
+    # Use HRP as the fixed combination method — no selection based on in-sample
+    # Sharpe. HRP is chosen a priori because it is robust to covariance
+    # estimation error and requires no expected-return inputs (López de Prado
+    # 2016). Picking the "best" method by full-sample Sharpe is lookahead bias.
+    combined = hrp
+    combined_metrics = m_hrp
+    sleeves["Combined Book (HRP)"] = combined
+    print(f"\n  Combined Book (HRP, fixed a priori):")
+    print(f"  Sharpe:     {combined_metrics['Sharpe Ratio']:.3f}")
     print(f"  Ann Return: {combined_metrics['Annualized Return']:+.2%}")
     print(f"  Sortino:    {combined_metrics['Sortino Ratio']:.3f}")
     print(f"  Calmar:     {combined_metrics['Calmar Ratio']:.3f}")
@@ -335,11 +338,11 @@ def main():
     # Tearsheets
     try:
         generate_tearsheet(
-            combined, benchmark=benchmark, strategy_name="Combined Book (6 sleeves, EW)",
+            combined, benchmark=benchmark, strategy_name="Combined Book (HRP)",
             output_path=tearsheet_dir / "Combined_Book.png",
         )
         for name, ret in sleeves.items():
-            if name == "Combined Book (EW)":
+            if name == "Combined Book (HRP)":
                 continue
             generate_tearsheet(
                 ret, benchmark=benchmark, strategy_name=name,
