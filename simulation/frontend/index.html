@@ -18,7 +18,6 @@
       <input id="start" type="date" value="2005-01-01" />
       <span>→</span>
       <input id="end" type="date" value="2024-12-31" />
-      <button id="run" class="run-btn">Run</button>
     </div>
   </header>
 
@@ -26,11 +25,18 @@
     <section class="col-code">
       <div class="panel">
         <header class="panel-head">
+          <h3>Effective call</h3>
+          <span class="panel-sub">updates as you drag</span>
+        </header>
+        <pre class="code-block live"><code id="code-live" class="language-python"></code></pre>
+      </div>
+
+      <div class="panel">
+        <header class="panel-head">
           <div class="panel-tabs" id="code-tabs">
             <button class="active" data-view="signal">Signal</button>
-            <button data-view="orders">Order generation</button>
-            <button data-view="loop">Backtest loop</button>
-            <button data-view="config">Config</button>
+            <button data-view="orders">build_target_weights</button>
+            <button data-view="loop">run_weight_backtest</button>
           </div>
           <div class="panel-path" id="panel-path"></div>
         </header>
@@ -45,52 +51,28 @@
         <div class="params" id="strategy-params"></div>
         <header class="panel-head">
           <h3>Engine</h3>
-          <span class="panel-sub">Applied to build_target_weights + run_weight_backtest</span>
         </header>
         <div class="params" id="engine-params"></div>
       </div>
     </section>
 
     <section class="col-results">
-      <div class="metrics-strip" id="metrics-strip">
-        <div class="m-card"><div class="m-label">Sharpe</div><div class="m-value" id="m-sharpe">—</div></div>
-        <div class="m-card"><div class="m-label">Ann. return</div><div class="m-value" id="m-return">—</div></div>
-        <div class="m-card"><div class="m-label">Ann. vol</div><div class="m-value" id="m-vol">—</div></div>
-        <div class="m-card"><div class="m-label">Max drawdown</div><div class="m-value" id="m-dd">—</div></div>
-        <div class="m-card"><div class="m-label">Sortino</div><div class="m-value" id="m-sortino">—</div></div>
-        <div class="m-card"><div class="m-label">Calmar</div><div class="m-value" id="m-calmar">—</div></div>
+      <div class="metrics-strip">
+        <div class="m-card"><div class="m-label">Sharpe</div><div class="m-value" id="m-sharpe">—</div><div class="m-sub" id="m-sharpe-sub"></div></div>
+        <div class="m-card"><div class="m-label">Ann. return</div><div class="m-value" id="m-return">—</div><div class="m-sub" id="m-return-sub"></div></div>
+        <div class="m-card"><div class="m-label">Max drawdown</div><div class="m-value" id="m-dd">—</div><div class="m-sub" id="m-dd-sub"></div></div>
+        <div class="m-card"><div class="m-label">T-cost drag / yr</div><div class="m-value" id="m-tcost">—</div><div class="m-sub" id="m-tcost-sub"></div></div>
       </div>
 
       <div class="panel">
         <header class="panel-head">
           <h3>Equity curve</h3>
-          <span class="panel-sub">Net of transaction costs · vs equal-weight universe</span>
+          <span class="panel-sub" id="equity-sub">net of t-cost · vs equal-weight universe</span>
         </header>
         <div id="chart-equity" class="chart"></div>
       </div>
 
-      <div class="panel">
-        <header class="panel-head">
-          <h3>Drawdown</h3>
-        </header>
-        <div id="chart-drawdown" class="chart small"></div>
-      </div>
-
-      <div class="panel">
-        <header class="panel-head">
-          <h3>Order generation summary</h3>
-          <span class="panel-sub">Turnover · positions · transaction-cost drag</span>
-        </header>
-        <div id="order-summary" class="order-summary"></div>
-      </div>
-
-      <div class="panel">
-        <header class="panel-head">
-          <h3>Recent rebalance holdings</h3>
-          <span class="panel-sub">Snapshot of target weights at the last rebalance dates</span>
-        </header>
-        <div id="holdings" class="holdings"></div>
-      </div>
+      <div class="stats-line" id="stats-line"></div>
     </section>
   </main>
 
