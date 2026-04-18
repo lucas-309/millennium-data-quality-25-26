@@ -3,146 +3,99 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Alpha Book Simulator</title>
+  <title>Strategy Simulator</title>
   <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" />
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark">α</span>
-      <div>
-        <div class="brand-title">Alpha Book Simulator</div>
-        <div class="brand-sub">HRP-combined multi-sleeve long-only equity book — Wharton 2000–2025</div>
-      </div>
+    <div class="brand">Strategy Simulator</div>
+    <nav class="strategy-tabs" id="strategy-tabs"></nav>
+    <div class="horizon">
+      <input id="start" type="date" value="2005-01-01" />
+      <span>→</span>
+      <input id="end" type="date" value="2024-12-31" />
+      <button id="run" class="run-btn">Run</button>
     </div>
-    <div id="status-pill" class="pill pill-idle">loading…</div>
   </header>
 
   <main class="layout">
-    <aside class="controls">
-      <section>
-        <h2>Horizon</h2>
-        <label>Start
-          <input id="start" type="date" value="2005-01-01" />
-        </label>
-        <label>End
-          <input id="end" type="date" value="2024-12-31" />
-        </label>
-      </section>
-
-      <section>
-        <h2>Timing sleeves</h2>
-        <label class="toggle">
-          <input type="checkbox" id="inc_vol_managed" checked />
-          <span>Vol-Managed Equity</span>
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="inc_trend_filtered" checked />
-          <span>Trend-Filtered Equity</span>
-        </label>
-        <label>Target vol <span class="v" id="tv_v">16%</span>
-          <input id="target_vol" type="range" min="0.05" max="0.30" step="0.01" value="0.16" />
-        </label>
-        <label>Max leverage <span class="v" id="ml_v">2.00×</span>
-          <input id="max_leverage" type="range" min="1.0" max="3.0" step="0.1" value="2.0" />
-        </label>
-        <label>SMA window <span class="v" id="sma_v">200d</span>
-          <input id="sma_window" type="range" min="50" max="300" step="10" value="200" />
-        </label>
-        <label>Risk-free (ann.) <span class="v" id="rf_v">4.0%</span>
-          <input id="risk_free" type="range" min="0" max="0.08" step="0.005" value="0.04" />
-        </label>
-      </section>
-
-      <section>
-        <h2>Selection sleeves</h2>
-        <label class="toggle">
-          <input type="checkbox" id="sel_mom" checked data-name="Cross-Sectional Momentum" />
-          <span>Cross-Sectional Momentum</span>
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="sel_lowvol" checked data-name="Low Volatility" />
-          <span>Low Volatility</span>
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="sel_smallcap" checked data-name="Small-Cap Tilt" />
-          <span>Small-Cap Tilt</span>
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="selection_trend_overlay" checked />
-          <span>Apply trend overlay to selection sleeves</span>
-        </label>
-      </section>
-
-      <section>
-        <h2>Combination</h2>
-        <label>Method
-          <select id="combo_method">
-            <option value="hrp" selected>Hierarchical Risk Parity</option>
-            <option value="risk_parity">Risk Parity</option>
-            <option value="inverse_vol">Inverse Volatility</option>
-            <option value="equal">Equal Weight</option>
-          </select>
-        </label>
-        <label class="toggle">
-          <input type="checkbox" id="combined_trend_overlay" />
-          <span>Trend overlay on combined book</span>
-        </label>
-        <label>Rolling Sharpe window <span class="v" id="rw_v">252d</span>
-          <input id="rolling_window" type="range" min="63" max="504" step="21" value="252" />
-        </label>
-      </section>
-
-      <section class="actions">
-        <button id="run" class="primary">Run simulation</button>
-        <button id="reset" class="ghost">Reset defaults</button>
-      </section>
-
-      <section class="footer-note">
-        <p>Selection sleeves are pre-computed with signal_lag=1, 10bps t-cost, top-20% long-only, inverse-vol weighting, monthly rebalance, 8% max position. Timing, combination, and trend-overlay knobs recompute in real time.</p>
-      </section>
-    </aside>
-
-    <section class="results">
-      <div class="scorecard" id="scorecard">
-        <div class="card" data-role="placeholder">
-          <div class="card-label">Run a simulation to see results</div>
-        </div>
+    <section class="col-code">
+      <div class="panel">
+        <header class="panel-head">
+          <div class="panel-tabs" id="code-tabs">
+            <button class="active" data-view="signal">Signal</button>
+            <button data-view="orders">Order generation</button>
+            <button data-view="loop">Backtest loop</button>
+            <button data-view="config">Config</button>
+          </div>
+          <div class="panel-path" id="panel-path"></div>
+        </header>
+        <pre class="code-block"><code id="code-view" class="language-python"></code></pre>
       </div>
 
-      <div class="chart-grid">
-        <div class="chart-card">
-          <h3>Cumulative return</h3>
-          <div id="chart-cumulative" class="chart"></div>
-        </div>
-        <div class="chart-card">
-          <h3>Drawdown — combined book</h3>
-          <div id="chart-drawdown" class="chart small"></div>
-        </div>
-        <div class="chart-card">
-          <h3>Rolling Sharpe</h3>
-          <div id="chart-rolling" class="chart small"></div>
-        </div>
-        <div class="chart-card">
-          <h3>Sleeve correlation</h3>
-          <div id="chart-corr" class="chart small"></div>
-        </div>
-        <div class="chart-card">
-          <h3>Monthly returns — combined book</h3>
-          <div id="chart-heatmap" class="chart small"></div>
-        </div>
+      <div class="panel">
+        <header class="panel-head">
+          <h3 id="strategy-title">Parameters</h3>
+          <span class="panel-sub" id="strategy-summary"></span>
+        </header>
+        <div class="params" id="strategy-params"></div>
+        <header class="panel-head">
+          <h3>Engine</h3>
+          <span class="panel-sub">Applied to build_target_weights + run_weight_backtest</span>
+        </header>
+        <div class="params" id="engine-params"></div>
+      </div>
+    </section>
+
+    <section class="col-results">
+      <div class="metrics-strip" id="metrics-strip">
+        <div class="m-card"><div class="m-label">Sharpe</div><div class="m-value" id="m-sharpe">—</div></div>
+        <div class="m-card"><div class="m-label">Ann. return</div><div class="m-value" id="m-return">—</div></div>
+        <div class="m-card"><div class="m-label">Ann. vol</div><div class="m-value" id="m-vol">—</div></div>
+        <div class="m-card"><div class="m-label">Max drawdown</div><div class="m-value" id="m-dd">—</div></div>
+        <div class="m-card"><div class="m-label">Sortino</div><div class="m-value" id="m-sortino">—</div></div>
+        <div class="m-card"><div class="m-label">Calmar</div><div class="m-value" id="m-calmar">—</div></div>
       </div>
 
-      <div class="chart-card">
-        <h3>Per-sleeve metrics</h3>
-        <div id="metrics-table" class="table-wrap"></div>
+      <div class="panel">
+        <header class="panel-head">
+          <h3>Equity curve</h3>
+          <span class="panel-sub">Net of transaction costs · vs equal-weight universe</span>
+        </header>
+        <div id="chart-equity" class="chart"></div>
+      </div>
+
+      <div class="panel">
+        <header class="panel-head">
+          <h3>Drawdown</h3>
+        </header>
+        <div id="chart-drawdown" class="chart small"></div>
+      </div>
+
+      <div class="panel">
+        <header class="panel-head">
+          <h3>Order generation summary</h3>
+          <span class="panel-sub">Turnover · positions · transaction-cost drag</span>
+        </header>
+        <div id="order-summary" class="order-summary"></div>
+      </div>
+
+      <div class="panel">
+        <header class="panel-head">
+          <h3>Recent rebalance holdings</h3>
+          <span class="panel-sub">Snapshot of target weights at the last rebalance dates</span>
+        </header>
+        <div id="holdings" class="holdings"></div>
       </div>
     </section>
   </main>
 
+  <div id="status-bar" class="statusbar">loading…</div>
   <div id="toast" class="toast hidden"></div>
-
   <script src="app.js"></script>
 </body>
 </html>

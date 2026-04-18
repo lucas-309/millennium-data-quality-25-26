@@ -83,6 +83,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(simulator.status())
             return
 
+        if path == "/api/catalog":
+            self._send_json(simulator.catalog())
+            return
+
         if path == "/" or path == "":
             self._send_file(FRONTEND_DIR / "index.html")
             return
