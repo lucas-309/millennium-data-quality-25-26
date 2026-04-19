@@ -198,6 +198,56 @@ body {
 
 .chart { height: 380px; }
 
+/* ---- Survivorship audit ---- */
+.audit-body {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.4fr);
+  gap: 14px;
+  padding: 14px;
+  align-items: start;
+}
+.audit-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.audit-stats .a-cell {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.audit-stats .a-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+}
+.audit-stats .a-value {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  margin-top: 3px;
+}
+.audit-stats .a-value.warn { color: var(--warn); }
+.audit-stats .a-value.bad  { color: var(--bad); }
+.audit-chart { min-height: 220px; grid-row: 1 / span 2; grid-column: 2; }
+.audit-note {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+  padding: 10px 12px;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+}
+@media (max-width: 900px) {
+  .audit-body { grid-template-columns: 1fr; }
+  .audit-chart { grid-row: auto; grid-column: auto; }
+}
+
 /* ---- Data inspector ---- */
 .data-body {
   display: grid;

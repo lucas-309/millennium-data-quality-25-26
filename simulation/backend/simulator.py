@@ -249,6 +249,7 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
             "turnover_annualized": turnover_ann,
             "tcost_drag_annualized": tcost_drag_ann,
         },
+        "survivorship_audit": result.survivorship_audit or {},
     }
     _SIM_CACHE[key] = response
     return response
