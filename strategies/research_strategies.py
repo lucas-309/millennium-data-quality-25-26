@@ -219,6 +219,22 @@ class CrossSectionalMomentumStrategy(SignalStrategy):
         return prices.shift(self.skip_days).div(prices.shift(self.lookback_days)) - 1.0
 
 
+class ShortTermReversalStrategy(SignalStrategy):
+    name = "Short-Term Reversal"
+    motivation = "Short-term losers tend to bounce back over the following days."
+    economic_rationale = "Overreaction to news and liquidity shocks creates transient price dislocations that mean-revert."
+    why_it_works = "Daily/weekly reversal is one of the most persistent short-horizon anomalies in equities."
+    why_it_fails = "Strongly trending markets suppress reversal; execution cost eats the signal at high turnover."
+
+    def __init__(self, lookback_days: int = 5):
+        self.lookback_days = lookback_days
+
+    def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
+        # Negate recent return — biggest recent losers get the highest score
+        # (i.e. long candidates), biggest recent winners get the lowest.
+        return -(dataset.prices.div(dataset.prices.shift(self.lookback_days)) - 1.0)
+
+
 class LowVolatilityStrategy(SignalStrategy):
     name = "Low Volatility"
     motivation = "Hold the lowest-volatility names, exploiting the low-vol anomaly."
