@@ -266,6 +266,52 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       ...plotLayout,
       yaxis: { ...plotLayout.yaxis, title: "Cumulative return (%)", tickformat: ",.0f" },
     }, plotConfig);
+
+    renderAudit(data.survivorship_audit || {});
+  }
+
+  function renderAudit(a) {
+    const sub = $("audit-sub");
+    const statsEl = $("audit-stats");
+    const noteEl = $("audit-note");
+    if (!a || !a.universe_size) {
+      sub.textContent = "no audit available";
+      statsEl.innerHTML = "";
+      noteEl.textContent = "";
+      Plotly.purge("chart-audit");
+      return;
+    }
+    const bias = a.expected_annual_upward_bias_pct || {};
+    const biasTxt = bias.low != null && bias.high != null
+      ? `${bias.low.toFixed(1)}–${bias.high.toFixed(1)}% / yr`
+      : "—";
+    sub.textContent = `${a.universe_size} survivors · ${a.window_start} → ${a.window_end} (${a.window_years}y)`;
+
+    const inceptionCls = a.inception_biased_count > 0 ? "warn" : "";
+    const delistCls = a.delisted_within_window_count > 0 ? "bad" : "";
+
+    statsEl.innerHTML = `
+      <div class="a-cell"><div class="a-label">Universe size</div><div class="a-value">${a.universe_size}</div></div>
+      <div class="a-cell"><div class="a-label">Est. upward bias</div><div class="a-value warn">${biasTxt}</div></div>
+      <div class="a-cell"><div class="a-label">Active at start</div><div class="a-value">${a.active_at_start}</div></div>
+      <div class="a-cell"><div class="a-label">Active at end</div><div class="a-value">${a.active_at_end}</div></div>
+      <div class="a-cell"><div class="a-label">Post-start inceptions</div><div class="a-value ${inceptionCls}">${a.inception_biased_count}</div></div>
+      <div class="a-cell"><div class="a-label">Delistings in window</div><div class="a-value ${delistCls}">${a.delisted_within_window_count}</div></div>
+    `;
+    noteEl.textContent = a.structural_bias_note || "";
+
+    const ts = a.active_timeseries || { dates: [], counts: [] };
+    Plotly.react("chart-audit", [
+      { x: ts.dates, y: ts.counts, type: "scatter", mode: "lines",
+        name: "Active tickers", line: { color: "#58c1ff", width: 1.8 },
+        fill: "tozeroy", fillcolor: "rgba(88,193,255,0.08)" },
+    ], {
+      ...plotLayout,
+      margin: { t: 10, r: 10, b: 30, l: 48 },
+      height: 220,
+      showlegend: false,
+      yaxis: { ...plotLayout.yaxis, title: "Active tickers", rangemode: "tozero" },
+    }, plotConfig);
   }
 
   // ---------- Data inspector ----------
