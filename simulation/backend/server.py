@@ -87,6 +87,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(simulator.catalog())
             return
 
+        if path == "/api/data":
+            try:
+                self._send_json(simulator.data_overview())
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=409)
+            return
+
+        if path.startswith("/api/data/ticker/"):
+            tic = path.split("/api/data/ticker/", 1)[1]
+            try:
+                self._send_json(simulator.ticker_detail(tic))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=404)
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc)}, status=409)
+            return
+
         if path == "/" or path == "":
             self._send_file(FRONTEND_DIR / "index.html")
             return

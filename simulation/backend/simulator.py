@@ -1,14 +1,8 @@
 """Single-strategy simulator — every knob maps to a real line in the repo.
 
-The catalog below is the single source of truth. Each entry:
-  - binds to an actual strategy class in strategies/research_strategies.py
-  - lists only the parameters that exist on that class's __init__ signature
-  - exposes the class's live source code via inspect.getsource() so the
-    frontend shows exactly what the backend is about to run
-
-The engine knobs come from BacktestConfig — every field we expose is
-consumed by build_target_weights() or run_weight_backtest() in the repo.
-Nothing is invented.
+MVP scope: two strategies (momentum, short-term reversal) and three engine
+knobs (transaction_cost_bps, long_quantile, signal_lag). Other BacktestConfig
+fields are held at sensible defaults; extend CATALOG / ENGINE_PARAMS to grow.
 """
 from __future__ import annotations
 
@@ -17,7 +11,7 @@ import inspect
 import json
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -38,108 +32,69 @@ _SIM_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
-# Strategy catalog — declarative, each field mirrors the actual source
+# Catalog — declarative, each field mirrors an actual line of source
 # ---------------------------------------------------------------------------
 STRATEGIES = [
     {
         "id": "momentum",
         "cls": rs.CrossSectionalMomentumStrategy,
-        "label": "Cross-Sectional Momentum",
-        "summary": "Rank stocks by trailing return (skip the last month), long the top quintile.",
+        "cls_name": "CrossSectionalMomentumStrategy",
+        "label": "Momentum",
+        "summary": "Long the top-quintile winners over the last lookback_days (skipping the last skip_days).",
         "params": [
-            {
-                "name": "lookback_days", "type": "int", "default": 126,
-                "min": 21, "max": 504, "step": 21,
-                "desc": "Days of history used for the return ranking.",
-            },
-            {
-                "name": "skip_days", "type": "int", "default": 21,
-                "min": 0, "max": 63, "step": 1,
-                "desc": "Days to skip at the front (avoid 1-month reversal).",
-            },
+            {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 504, "step": 21},
+            {"name": "skip_days",     "type": "int", "default": 21,  "min": 0,  "max": 63,  "step": 1},
         ],
     },
     {
-        "id": "lowvol",
-        "cls": rs.LowVolatilityStrategy,
-        "label": "Low Volatility",
-        "summary": "Rank stocks by trailing realized vol (ascending), long the calmest quintile.",
+        "id": "mean_reversion",
+        "cls": rs.ShortTermReversalStrategy,
+        "cls_name": "ShortTermReversalStrategy",
+        "label": "Mean Reversion",
+        "summary": "Long the top-quintile recent losers over the last lookback_days.",
         "params": [
-            {
-                "name": "window", "type": "int", "default": 126,
-                "min": 21, "max": 504, "step": 21,
-                "desc": "Rolling window (in trading days) for realized vol.",
-            },
+            {"name": "lookback_days", "type": "int", "default": 5, "min": 1, "max": 21, "step": 1},
         ],
-    },
-    {
-        "id": "smallcap",
-        "cls": rs.SmallCapTiltStrategy,
-        "label": "Small-Cap Tilt",
-        "summary": "Rank by -log(market cap), long the smallest quintile.",
-        "params": [],
     },
 ]
 STRATEGY_BY_ID = {s["id"]: s for s in STRATEGIES}
 
-# Engine knobs — a strict subset of BacktestConfig that actually fires on
-# every run in build_target_weights / run_weight_backtest.
 ENGINE_PARAMS = [
-    {
-        "name": "rebalance_frequency", "type": "choice", "default": "ME",
-        "choices": [
-            {"value": "W",  "label": "Weekly"},
-            {"value": "ME", "label": "Monthly (end-of-month)"},
-            {"value": "QE", "label": "Quarterly (end-of-quarter)"},
-        ],
-        "desc": "Pandas resample rule used by _get_rebalance_dates().",
-    },
-    {
-        "name": "signal_lag", "type": "int", "default": 1,
-        "min": 0, "max": 5, "step": 1,
-        "desc": "Days to delay target weights before execution — 1 = trade on tomorrow's open.",
-    },
-    {
-        "name": "transaction_cost_bps", "type": "float", "default": 10.0,
-        "min": 0.0, "max": 50.0, "step": 0.5,
-        "desc": "Round-trip cost in basis points applied to turnover each rebalance.",
-    },
-    {
-        "name": "long_quantile", "type": "float", "default": 0.20,
-        "min": 0.05, "max": 0.50, "step": 0.05,
-        "desc": "Fraction of the cross-section to go long (top nlargest).",
-    },
-    {
-        "name": "max_position_weight", "type": "float", "default": 0.08,
-        "min": 0.01, "max": 0.25, "step": 0.01,
-        "desc": "Cap on any single name's portfolio weight.",
-    },
-    {
-        "name": "leverage", "type": "float", "default": 1.0,
-        "min": 0.5, "max": 2.0, "step": 0.1,
-        "desc": "Gross exposure target (1.0 = fully invested long-only).",
-    },
-    {
-        "name": "construction_method", "type": "choice", "default": "inverse_vol",
-        "choices": [
-            {"value": "equal_weight", "label": "Equal weight"},
-            {"value": "inverse_vol",  "label": "Inverse volatility"},
-            {"value": "mean_variance", "label": "Mean-variance"},
-        ],
-        "desc": "How the selected names are weighted after ranking.",
-    },
+    {"name": "transaction_cost_bps", "type": "float", "default": 10.0, "min": 0.0, "max": 50.0, "step": 0.5},
+    {"name": "long_quantile",        "type": "float", "default": 0.20, "min": 0.05, "max": 0.50, "step": 0.05},
+    {"name": "signal_lag",           "type": "int",   "default": 1,    "min": 0,   "max": 3,    "step": 1},
 ]
+
+# Fields held constant — shown in the UI so nothing is hidden.
+GICS_SECTORS = {
+    "10": "Energy", "15": "Materials", "20": "Industrials",
+    "25": "Consumer Discretionary", "30": "Consumer Staples",
+    "35": "Health Care", "40": "Financials",
+    "45": "Information Technology", "50": "Communication Services",
+    "55": "Utilities", "60": "Real Estate",
+}
+
+
+FIXED_ENGINE = {
+    "rebalance_frequency": "ME",
+    "max_position_weight": 0.08,
+    "leverage": 1.0,
+    "construction_method": "inverse_vol",
+    "long_only": True,
+    "short_quantile": 0.0,
+    "min_names": 10,
+}
 
 
 # ---------------------------------------------------------------------------
-# Warmup — load dataset only
+# Warmup
 # ---------------------------------------------------------------------------
 def warmup(start: str = "2000-01-01", end: str = "2025-12-31") -> None:
     with _LOCK:
         if _STATE["loading"] or _STATE["ready"]:
             return
         _STATE["loading"] = True
-        _STATE["message"] = "loading Wharton dataset"
+        _STATE["message"] = "loading Wharton parquet"
         _STATE["error"] = None
     try:
         dataset = load_wharton_research_dataset(
@@ -172,29 +127,25 @@ def status() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Catalog — expose actual source code
+# Catalog endpoint
 # ---------------------------------------------------------------------------
 def catalog() -> Dict[str, Any]:
     strategies = []
     for entry in STRATEGIES:
         src = inspect.getsource(entry["cls"])
         strategies.append({
-            "id": entry["id"], "label": entry["label"],
+            "id": entry["id"],
+            "label": entry["label"],
+            "cls_name": entry["cls_name"],
             "summary": entry["summary"],
             "params": entry["params"],
             "source": src,
-            "source_file": f"strategies/research_strategies.py",
+            "source_file": "strategies/research_strategies.py",
         })
-    engine_sources = {
-        "BacktestConfig": inspect.getsource(rbt.BacktestConfig),
-        "build_target_weights": inspect.getsource(rbt.build_target_weights),
-        "run_weight_backtest": inspect.getsource(rbt.run_weight_backtest),
-    }
     return {
         "strategies": strategies,
         "engine_params": ENGINE_PARAMS,
-        "engine_sources": engine_sources,
-        "engine_source_file": "backtester/research_backtester.py",
+        "fixed_engine": FIXED_ENGINE,
     }
 
 
@@ -202,8 +153,7 @@ def catalog() -> Dict[str, Any]:
 # Simulation
 # ---------------------------------------------------------------------------
 def _cache_key(payload: Dict[str, Any]) -> str:
-    blob = json.dumps(payload, sort_keys=True, default=str)
-    return hashlib.md5(blob.encode()).hexdigest()
+    return hashlib.md5(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def _metrics(returns: pd.Series) -> Dict[str, float]:
@@ -214,47 +164,14 @@ def _metrics(returns: pd.Series) -> Dict[str, float]:
     ann_ret = cum.iloc[-1] ** (252 / len(clean)) - 1
     std = clean.std(ddof=0)
     sharpe = clean.mean() / std * np.sqrt(252) if std > 0 else 0.0
-    downside = clean[clean < 0]
-    sortino = clean.mean() / downside.std(ddof=0) * np.sqrt(252) if len(downside) and downside.std(ddof=0) > 0 else 0.0
     dd = (cum / cum.cummax() - 1).min()
     return {
         "annualized_return": float(ann_ret),
         "annualized_volatility": float(std * np.sqrt(252)),
         "sharpe": float(sharpe),
-        "sortino": float(sortino),
         "max_drawdown": float(dd),
-        "calmar": float(ann_ret / abs(dd)) if dd else 0.0,
         "win_rate": float((clean > 0).mean()),
     }
-
-
-def _drawdown(returns: pd.Series) -> pd.Series:
-    cum = (1 + returns.fillna(0)).cumprod()
-    return cum / cum.cummax() - 1
-
-
-def _sample_holdings(target_weights: pd.DataFrame, max_rows: int = 8, top_n: int = 10) -> List[Dict[str, Any]]:
-    """Pull the last few rebalance snapshots — non-zero holdings only."""
-    rebalance_rows = []
-    prev = None
-    for date, row in target_weights.iterrows():
-        values = row.values
-        if prev is None or not np.allclose(values, prev, equal_nan=False):
-            rebalance_rows.append(date)
-            prev = values
-    rebalance_rows = rebalance_rows[-max_rows:]
-    snapshots = []
-    for date in rebalance_rows:
-        row = target_weights.loc[date]
-        nonzero = row[row.abs() > 1e-6].sort_values(ascending=False).head(top_n)
-        snapshots.append({
-            "date": str(date.date()),
-            "n_positions": int((row.abs() > 1e-6).sum()),
-            "gross_exposure": float(row.abs().sum()),
-            "net_exposure": float(row.sum()),
-            "top": [{"ticker": t, "weight": float(w)} for t, w in nonzero.items()],
-        })
-    return snapshots
 
 
 def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -271,37 +188,27 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     start = body.get("start") or _STATE["date_min"]
     end = body.get("end") or _STATE["date_max"]
 
-    # Build strategy instance — only pass kwargs that actually exist
+    # Build strategy with only the declared kwargs
     kw_allowed = {p["name"] for p in strat_entry["params"]}
-    kwargs = {k: strategy_params[k] for k in kw_allowed if k in strategy_params}
-    strat_instance = strat_entry["cls"](**kwargs)
+    strat_kwargs = {k: strategy_params[k] for k in kw_allowed if k in strategy_params}
+    strat_instance = strat_entry["cls"](**strat_kwargs)
 
-    # Build config — only pass keys that actually exist on BacktestConfig
-    config_kwargs: Dict[str, Any] = {
-        "long_only": True,
-        "short_quantile": 0.0,
-        "min_names": 10,
-    }
-    config_kwargs.update({
-        k: engine_params[k]
-        for k in ("rebalance_frequency", "signal_lag", "transaction_cost_bps",
-                  "long_quantile", "max_position_weight", "leverage", "construction_method")
-        if k in engine_params
+    # Build BacktestConfig: fixed defaults + the 3 exposed knobs
+    cfg_kwargs = dict(FIXED_ENGINE)
+    for p in ENGINE_PARAMS:
+        if p["name"] in engine_params:
+            cfg_kwargs[p["name"]] = engine_params[p["name"]]
+    config = rbt.BacktestConfig(**cfg_kwargs)
+
+    key = _cache_key({
+        "strategy_id": strategy_id, "strategy_params": strat_kwargs,
+        "engine_params": cfg_kwargs, "start": start, "end": end,
     })
-    config = rbt.BacktestConfig(**config_kwargs)
-
-    cache_payload = {
-        "strategy_id": strategy_id, "strategy_params": kwargs,
-        "engine_params": config_kwargs, "start": start, "end": end,
-    }
-    key = _cache_key(cache_payload)
     if key in _SIM_CACHE:
         return _SIM_CACHE[key]
 
     dataset = _STATE["dataset"]
     window = (pd.Timestamp(start), pd.Timestamp(end))
-
-    # Slice the dataset to the user's window
     prices = dataset.prices.loc[window[0]:window[1]]
     returns = dataset.returns.loc[window[0]:window[1]]
     benchmark = _STATE["benchmark"].loc[window[0]:window[1]]
@@ -325,36 +232,112 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
         benchmark_returns=sliced.benchmark_returns, strategy_name=strat_entry["label"],
     )
 
-    gross_cum = (1 + result.gross_returns.fillna(0)).cumprod() - 1
     net_cum = (1 + result.net_returns.fillna(0)).cumprod() - 1
     bench_cum = (1 + benchmark.reindex(result.net_returns.index).fillna(0)).cumprod() - 1
 
     turnover_ann = float(result.turnover.mean() * 252)
-    tcost_drag_ann = float(result.transaction_costs.sum() / len(result.transaction_costs) * 252)
-    n_rebalances = int((result.turnover > 0).sum())
-    avg_positions = float((result.target_weights.abs() > 1e-6).sum(axis=1).replace(0, np.nan).mean())
-
-    dates = [d.strftime("%Y-%m-%d") for d in result.net_returns.index]
+    tcost_drag_ann = float(result.transaction_costs.mean() * 252)
 
     response = {
         "strategy": {"id": strategy_id, "label": strat_entry["label"]},
-        "dates": dates,
+        "dates": [d.strftime("%Y-%m-%d") for d in result.net_returns.index],
         "cumulative_net": [float(v) for v in net_cum.values],
-        "cumulative_gross": [float(v) for v in gross_cum.values],
         "cumulative_benchmark": [float(v) for v in bench_cum.values],
-        "drawdown": [float(v) for v in _drawdown(result.net_returns).values],
         "metrics_net": _metrics(result.net_returns),
-        "metrics_gross": _metrics(result.gross_returns),
         "metrics_benchmark": _metrics(benchmark.reindex(result.net_returns.index).fillna(0)),
         "order_summary": {
-            "n_rebalances": n_rebalances,
-            "avg_positions": avg_positions if not np.isnan(avg_positions) else 0.0,
             "turnover_annualized": turnover_ann,
             "tcost_drag_annualized": tcost_drag_ann,
-            "total_tcost_cumulative": float(result.transaction_costs.sum()),
         },
-        "recent_holdings": _sample_holdings(result.target_weights),
-        "params_echo": cache_payload,
     }
     _SIM_CACHE[key] = response
     return response
+
+
+# ---------------------------------------------------------------------------
+# Data inspector
+# ---------------------------------------------------------------------------
+def data_overview() -> Dict[str, Any]:
+    """Per-ticker summary rows for the table view."""
+    if not _STATE["ready"]:
+        raise RuntimeError("simulator not ready")
+    dataset = _STATE["dataset"]
+    prices = dataset.prices
+    meta = dataset.metadata if dataset.metadata is not None else pd.DataFrame()
+
+    rows: List[Dict[str, Any]] = []
+    for tic in prices.columns:
+        series = prices[tic].dropna()
+        if series.empty:
+            continue
+        start = series.index.min()
+        end = series.index.max()
+        total_return = float(series.iloc[-1] / series.iloc[0] - 1)
+        n_days = int(series.shape[0])
+        row: Dict[str, Any] = {
+            "ticker": tic,
+            "start": str(start.date()),
+            "end": str(end.date()),
+            "n_days": n_days,
+            "total_return": total_return,
+            "first_price": float(series.iloc[0]),
+            "last_price": float(series.iloc[-1]),
+        }
+        if tic in meta.index:
+            row["name"] = str(meta.at[tic, "conm"]) if "conm" in meta.columns and pd.notna(meta.at[tic, "conm"]) else ""
+            sector_code = str(meta.at[tic, "gsector"]).split(".")[0] if "gsector" in meta.columns and pd.notna(meta.at[tic, "gsector"]) else ""
+            row["sector"] = GICS_SECTORS.get(sector_code, sector_code)
+        else:
+            row["name"] = ""
+            row["sector"] = ""
+        rows.append(row)
+
+    return {
+        "source_file": "backtester/WhartonDataSource.parquet",
+        "date_min": _STATE["date_min"],
+        "date_max": _STATE["date_max"],
+        "n_tickers": len(rows),
+        "tickers": rows,
+    }
+
+
+def ticker_detail(ticker: str) -> Dict[str, Any]:
+    """Price history + summary stats for a single ticker."""
+    if not _STATE["ready"]:
+        raise RuntimeError("simulator not ready")
+    dataset = _STATE["dataset"]
+    ticker = ticker.upper()
+    if ticker not in dataset.prices.columns:
+        raise ValueError(f"ticker not found: {ticker}")
+    series = dataset.prices[ticker].dropna()
+    returns = series.pct_change().dropna()
+    ann_vol = float(returns.std(ddof=0) * np.sqrt(252)) if len(returns) > 1 else 0.0
+    ann_ret = float((series.iloc[-1] / series.iloc[0]) ** (252 / max(len(series), 1)) - 1)
+    max_dd = float((series / series.cummax() - 1).min())
+
+    meta: Dict[str, Any] = {}
+    if dataset.metadata is not None and ticker in dataset.metadata.index:
+        row = dataset.metadata.loc[ticker]
+        for col in ("conm", "gsector", "gind", "sic", "naics", "exchg", "fic"):
+            if col in row.index and pd.notna(row[col]):
+                val = str(row[col])
+                if col == "gsector":
+                    code = val.split(".")[0]
+                    meta[col] = f"{code} — {GICS_SECTORS.get(code, '?')}"
+                else:
+                    meta[col] = val
+
+    return {
+        "ticker": ticker,
+        "metadata": meta,
+        "n_days": int(len(series)),
+        "start": str(series.index.min().date()),
+        "end": str(series.index.max().date()),
+        "first_price": float(series.iloc[0]),
+        "last_price": float(series.iloc[-1]),
+        "annualized_return": ann_ret,
+        "annualized_volatility": ann_vol,
+        "max_drawdown": max_dd,
+        "dates": [d.strftime("%Y-%m-%d") for d in series.index],
+        "prices": [float(v) for v in series.values],
+    }
