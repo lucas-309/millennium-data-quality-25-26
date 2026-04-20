@@ -140,6 +140,28 @@ def main() -> None:
     print(summary.round(3).to_string())
 
 
+def _df_to_markdown(df: pd.DataFrame) -> str:
+    df = df.reset_index()
+    cols = df.columns.tolist()
+    header = "| " + " | ".join(cols) + " |"
+    sep = "|" + "|".join(["---"] * len(cols)) + "|"
+    lines = [header, sep]
+    for _, row in df.iterrows():
+        cells = []
+        for c in cols:
+            v = row[c]
+            if pd.isna(v):
+                cells.append("—")
+            elif isinstance(v, (int, np.integer)):
+                cells.append(str(int(v)))
+            elif isinstance(v, float):
+                cells.append(f"{v:.3f}")
+            else:
+                cells.append(str(v))
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def _format_report(summary: pd.DataFrame, attrib: pd.DataFrame, args, dataset) -> str:
     parts = [
         f"# S&P 500 yfinance backtest",
@@ -152,14 +174,14 @@ def _format_report(summary: pd.DataFrame, attrib: pd.DataFrame, args, dataset) -
         "",
         "## Performance summary",
         "",
-        summary.round(3).to_markdown(),
+        _df_to_markdown(summary.round(3)),
         "",
     ]
     if not attrib.empty:
         parts.extend([
             "## Factor attribution (FF3 + MOM proxies)",
             "",
-            attrib.round(3).to_markdown(),
+            _df_to_markdown(attrib.round(3)),
             "",
         ])
     parts.extend([
@@ -171,8 +193,9 @@ def _format_report(summary: pd.DataFrame, attrib: pd.DataFrame, args, dataset) -
         "- Market cap is a **current-shares proxy** (today's sharesOutstanding × daily",
         "  Adj Close). It tracks price but does not reflect buybacks or issuance.",
         "- EPS is the trailing-twelve-month scalar from yfinance.info, broadcast as a",
-        "  constant panel. True point-in-time EPS history is not available through the",
-        "  free yfinance endpoint — see Wharton pull for the richer fundamentals path.",
+        "  constant panel. **This effectively disables the EPS Revision strategy** —",
+        "  its signal is the change in EPS over time, and a constant panel has zero",
+        "  change. Run on the Wharton pull to get a working EPS Revision backtest.",
         "- Returns use Adj Close (dividend-reinvested) so total return is captured.",
     ])
     return "\n".join(parts)
