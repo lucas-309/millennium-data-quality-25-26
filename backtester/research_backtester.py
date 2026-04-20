@@ -636,7 +636,7 @@ def build_event_study(
     events: pd.DataFrame,
     benchmark_returns: Optional[pd.Series] = None,
     event_type: Optional[str] = None,
-    window: int = 30,
+    window: int = 44,
 ) -> pd.DataFrame:
     if events is None or events.empty:
         return pd.DataFrame()
