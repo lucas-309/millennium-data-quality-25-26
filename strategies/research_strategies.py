@@ -250,6 +250,119 @@ class LowVolatilityStrategy(SignalStrategy):
         return -vol  # higher score = lower vol = more desirable
 
 
+class MLRidgeStrategy(SignalStrategy):
+    name = "ML Ridge (rolling OLS)"
+    motivation = "Let a rolling ridge regression blend momentum, short-term reversal, volatility, and market beta rather than hand-picking weights."
+    economic_rationale = "Each input carries an independent risk premium. A data-driven linear combination lets their relative payoffs rotate with regime instead of relying on static weights."
+    why_it_works = "Two-year rolling fit averages out single-period noise while still tracking coefficient drift. Ridge stabilises coefficients when momentum and reversal are correlated at the sampling horizon."
+    why_it_fails = "Structural breaks (2008, 2020) briefly invalidate the pre-break fit; when all features decorrelate from forward returns, coefficients collapse toward zero."
+
+    def __init__(
+        self,
+        training_lookback_days: int = 504,
+        momentum_lookback: int = 252,
+        momentum_skip: int = 21,
+        reversal_lookback: int = 5,
+        vol_lookback: int = 60,
+        beta_lookback: int = 60,
+        forward_horizon: int = 5,
+        refit_frequency: str = "ME",
+        ridge_lambda: float = 1.0,
+        holdout_start: Optional[str] = None,
+    ):
+        self.training_lookback_days = training_lookback_days
+        self.momentum_lookback = momentum_lookback
+        self.momentum_skip = momentum_skip
+        self.reversal_lookback = reversal_lookback
+        self.vol_lookback = vol_lookback
+        self.beta_lookback = beta_lookback
+        self.forward_horizon = forward_horizon
+        self.refit_frequency = refit_frequency
+        self.ridge_lambda = ridge_lambda
+        self.holdout_start = holdout_start  # optional: refit only up to here for a hard hold-out
+
+    def _build_features(self, dataset: ResearchDataset) -> dict[str, pd.DataFrame]:
+        prices = dataset.prices
+        returns = dataset.returns
+        benchmark = dataset.benchmark_returns.reindex(returns.index).fillna(0.0)
+
+        span = max(self.momentum_lookback - self.momentum_skip, 1)
+        mom = prices.pct_change(span, fill_method=None).shift(self.momentum_skip)
+        rev = -prices.pct_change(self.reversal_lookback, fill_method=None)
+        vol = returns.rolling(self.vol_lookback, min_periods=self.vol_lookback // 2).std()
+        cov = returns.rolling(self.beta_lookback, min_periods=self.beta_lookback // 2).cov(benchmark)
+        var = benchmark.rolling(self.beta_lookback, min_periods=self.beta_lookback // 2).var().replace(0, np.nan)
+        beta = cov.div(var, axis=0)
+
+        return {
+            "mom": _cross_sectional_zscore(mom),
+            "rev": _cross_sectional_zscore(rev),
+            "vol": _cross_sectional_zscore(vol),
+            "beta": _cross_sectional_zscore(beta),
+        }
+
+    def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
+        from backtester.research_backtester import _get_rebalance_dates
+
+        returns = dataset.returns
+        features = self._build_features(dataset)
+        feature_names = list(features.keys())
+        n_features = len(feature_names)
+
+        panel = np.stack(
+            [features[k].reindex_like(returns).values for k in feature_names],
+            axis=-1,
+        )
+
+        log_r = np.log1p(returns.fillna(0.0).values)
+        T, N = log_r.shape
+        cum = np.concatenate([np.zeros((1, N)), np.cumsum(log_r, axis=0)], axis=0)
+        fwd_log = np.full((T, N), np.nan)
+        H = self.forward_horizon
+        if T > H:
+            fwd_log[: T - H] = cum[H + 1 : T + 1] - cum[1 : T - H + 1]
+        fwd_returns = np.expm1(fwd_log)
+
+        rebalance_dates = _get_rebalance_dates(returns.index, self.refit_frequency)
+        scores_out = pd.DataFrame(np.nan, index=returns.index, columns=returns.columns, dtype=float)
+        positions = {d: i for i, d in enumerate(returns.index)}
+        holdout_ts = pd.Timestamp(self.holdout_start) if self.holdout_start else None
+
+        for date in rebalance_dates:
+            pos = positions.get(date)
+            if pos is None:
+                continue
+            train_end_pos = pos - H - 1
+            if holdout_ts is not None and date >= holdout_ts:
+                holdout_pos = positions.get(holdout_ts)
+                if holdout_pos is not None:
+                    train_end_pos = min(train_end_pos, holdout_pos - H - 1)
+            train_start_pos = max(train_end_pos - self.training_lookback_days + 1, 0)
+            if train_end_pos - train_start_pos < 100:
+                continue
+
+            X_slice = panel[train_start_pos : train_end_pos + 1].reshape(-1, n_features)
+            y_slice = fwd_returns[train_start_pos : train_end_pos + 1].reshape(-1)
+            mask = np.all(np.isfinite(X_slice), axis=1) & np.isfinite(y_slice)
+            if mask.sum() < 100:
+                continue
+            X = X_slice[mask]
+            y = y_slice[mask]
+
+            XtX = X.T @ X + self.ridge_lambda * np.eye(n_features)
+            try:
+                coefs = np.linalg.solve(XtX, X.T @ y)
+            except np.linalg.LinAlgError:
+                continue
+
+            X_today = panel[pos]
+            preds = X_today @ coefs
+            valid = np.all(np.isfinite(X_today), axis=1)
+            scores_out.iloc[pos] = np.where(valid, preds, np.nan)
+
+        return scores_out.ffill()
+
+
 def build_default_strategy_suite() -> list[SignalStrategy]:
     return [
         SmallCapTiltStrategy(),
@@ -258,4 +371,5 @@ def build_default_strategy_suite() -> list[SignalStrategy]:
         SectorNeutralDividendYieldStrategy(),
         CrossSectionalMomentumStrategy(),
         LowVolatilityStrategy(),
+        MLRidgeStrategy(),
     ]
