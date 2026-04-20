@@ -10,6 +10,7 @@ from backtester.data_source import YahooFinanceDataSource, PickleDataSource
 from strategies.mean_reversion import MeanReversionOrderGenerator
 from strategies.momentum_strategy import MomentumOrderGenerator
 from strategies.pairs_trading import PairsTradingOrderGenerator
+from strategies.event_driven_earnings import PEADOrderGenerator
 from backtester.backtesters.equity_backtest import EquityBacktestEngine
 from backtester.metrics import ExtendedMetrics
 
@@ -17,6 +18,7 @@ STRATEGIES = {
     "1": "Mean Reversion",
     "2": "Momentum",
     "3": "Pairs Trading",
+    "4": "Event-Driven Trading",
 }
 
 
