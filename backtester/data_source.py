@@ -57,12 +57,27 @@ class WhartonDataSource(DataSource):
     - cshtrd: Trading Volume Daily
     - trfd: Daily Total Return Factor
     - divd: Cash Dividends - Daily
+    
+    Optional: merge earnings surprise events (event dates + SUE) onto each daily row via
+    backward ``merge_asof`` so each trading day carries the latest known announcement on or
+    before that date (see ``include_surprise``).
     """
     
-    def __init__(self, file_path: Optional[str] = None, use_trfd: bool = False, cache_parquet: bool = True):
+    def __init__(
+        self,
+        file_path: Optional[str] = None,
+        use_trfd: bool = False,
+        cache_parquet: bool = True,
+        include_surprise: bool = True,
+        surprise_path: Optional[str] = None,
+        surprise_measure: str = "EPS",
+    ):
         self.file_path = file_path
         self.use_trfd = use_trfd
         self.cache_parquet = cache_parquet
+        self.include_surprise = include_surprise
+        self.surprise_path = surprise_path
+        self.surprise_measure = surprise_measure
         self.data = None
         self.resolved_path: Optional[Path] = None
         self._load_data()
@@ -143,6 +158,105 @@ class WhartonDataSource(DataSource):
             f"WhartonDataSource loaded {len(self.data)} records for "
             f"{self.data['tic'].nunique()} tickers from {self.resolved_path}"
         )
+        self._merge_surprise_if_needed()
+
+    def _normalize_tic_for_surprise(self, s: pd.Series) -> pd.Series:
+        t = s.astype(str).str.strip().str.upper()
+        alias = {
+            "BRK-B": "BRK.B",
+            "BF-B": "BF.B",
+            "FI": "FISV",
+            "PARA": "PARAA",
+            "-": "USD",
+        }
+        t = t.replace(alias)
+        return t.str.replace("-", ".", regex=False)
+
+    def _merge_surprise_if_needed(self) -> None:
+        if not self.include_surprise:
+            return
+
+        module_dir = Path(__file__).resolve().parent
+        path = Path(self.surprise_path) if self.surprise_path else module_dir / "surprise earning.csv"
+        if not path.is_absolute():
+            path = module_dir / path
+        if not path.exists():
+            print(f"Warning: surprise file not found at {path}, skipping surprise merge.")
+            return
+
+        try:
+            surp = pd.read_csv(path, low_memory=False)
+        except Exception as exc:
+            print(f"Warning: could not read surprise file {path}: {exc}")
+            return
+
+        if "TICKER" not in surp.columns or "anndats" not in surp.columns:
+            print("Warning: surprise file missing TICKER or anndats; skipping merge.")
+            return
+
+        if self.surprise_measure and "MEASURE" in surp.columns:
+            surp = surp[surp["MEASURE"].astype(str).str.upper() == str(self.surprise_measure).upper()].copy()
+        if surp.empty:
+            print(f"Warning: no surprise rows after MEASURE filter ({self.surprise_measure}); skipping merge.")
+            return
+
+        surp["tic"] = self._normalize_tic_for_surprise(surp["TICKER"])
+        surp["surprise_ann_date"] = pd.to_datetime(surp["anndats"], errors="coerce")
+        surp = surp.dropna(subset=["tic", "surprise_ann_date"])
+        surp = surp.sort_values(["tic", "surprise_ann_date"])
+
+        keep_cols = ["tic", "surprise_ann_date"]
+        for c in ("suescore", "actual", "surpmean", "surpstdev"):
+            if c in surp.columns:
+                keep_cols.append(c)
+        surp = surp[keep_cols].drop_duplicates(subset=["tic", "surprise_ann_date"], keep="last")
+        right = surp.rename(columns={"surprise_ann_date": "surprise_ann_date_right"})
+
+        left = self.data.copy()
+        left["tic"] = left["tic"].astype(str).str.strip().str.upper()
+
+        # merge_asof with by= requires strictly sorted blocks; a global sort can still fail
+        # pandas' check on some versions, so merge per ticker.
+        merged_chunks: List[pd.DataFrame] = []
+        value_cols = [c for c in right.columns if c not in ("tic", "surprise_ann_date_right")]
+        for tic_key, l_chunk in left.groupby("tic", sort=False):
+            l_chunk = l_chunk.sort_values("datadate")
+            r_chunk = right.loc[right["tic"] == tic_key, ["surprise_ann_date_right"] + value_cols].sort_values(
+                "surprise_ann_date_right"
+            )
+            if r_chunk.empty:
+                empty = l_chunk.copy()
+                empty["surprise_ann_date"] = pd.NaT
+                for c in value_cols:
+                    empty[c] = np.nan
+                merged_chunks.append(empty)
+                continue
+            m = pd.merge_asof(
+                l_chunk,
+                r_chunk,
+                left_on="datadate",
+                right_on="surprise_ann_date_right",
+                direction="backward",
+                allow_exact_matches=True,
+            )
+            m = m.rename(columns={"surprise_ann_date_right": "surprise_ann_date"})
+            merged_chunks.append(m)
+
+        merged = pd.concat(merged_chunks, ignore_index=True)
+
+        if "suescore" in merged.columns:
+            merged["last_sue"] = merged["suescore"]
+        else:
+            merged["last_sue"] = np.nan
+
+        ann = merged["surprise_ann_date"]
+        dd = merged["datadate"]
+        merged["days_since_announcement"] = (dd.dt.normalize() - ann.dt.normalize()).dt.days
+        merged["is_event_day"] = (dd.dt.normalize() == ann.dt.normalize()).astype(np.int8)
+
+        self.data = merged
+        n_with = merged["last_sue"].notna().sum()
+        print(f"Merged surprise (measure={self.surprise_measure}): {n_with} / {len(merged)} rows with last_sue.")
 
     def _resolve_source_path(self) -> Path:
         """
@@ -231,6 +345,46 @@ class WhartonDataSource(DataSource):
             ticker_data = ticker_data.set_index('datadate').sort_index()
             result[ticker] = ticker_data
             
+        return result
+
+    def get_historical_data_with_factors(
+        self,
+        tickers: List[str],
+        start_date: str,
+        end_date: str,
+        factor_cols: Optional[List[str]] = None,
+    ) -> Dict[str, pd.DataFrame]:
+        """
+        Return per-ticker timeseries including price and optional factor columns.
+
+        By default, this exposes surprise-related factors when available:
+        - last_sue
+        - days_since_announcement
+        - is_event_day
+        """
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+
+        if factor_cols is None:
+            factor_cols = ["last_sue", "days_since_announcement", "is_event_day"]
+
+        base_cols = ["datadate", "Adj Close"]
+        selected_factors = [c for c in factor_cols if c in self.data.columns]
+        selected_cols = base_cols + selected_factors
+
+        result: Dict[str, pd.DataFrame] = {}
+        for ticker in tickers:
+            mask = (
+                (self.data["datadate"] >= start_ts)
+                & (self.data["datadate"] <= end_ts)
+                & (self.data["tic"] == ticker)
+            )
+            ticker_data = self.data.loc[mask, selected_cols].copy()
+            if ticker_data.empty:
+                continue
+            ticker_data = ticker_data.set_index("datadate").sort_index()
+            result[ticker] = ticker_data
+
         return result
 
 # TODO: refactor implementations into sep. files, e.g. yahoo_finance_data_source.py
