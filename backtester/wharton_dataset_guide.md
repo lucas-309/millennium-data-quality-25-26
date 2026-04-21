@@ -18,7 +18,7 @@ from data_source import WhartonDataSource
 # default source: WhartonDataSource4.parquet (or .csv fallback)
 ds = WhartonDataSource(
     use_trfd=True,           # dividend-aware adjusted close
-    include_surprise=True,   # merge SUE/events from "surprise earning.csv"
+    include_surprise=True,   # merge SUE/events from "SUE_quarterly.csv" (default)
 )
 ```
 
@@ -38,7 +38,7 @@ You will see three types of columns:
 
 1. **Raw WRDS/Wharton columns** (from the source file)
 2. **Derived columns** (computed in `WhartonDataSource`)
-3. **Surprise/event columns** (optional, from `surprise earning.csv`)
+3. **Surprise/event columns** (optional, from `SUE_quarterly.csv`)
 
 ---
 
@@ -146,7 +146,7 @@ You will see three types of columns:
 
 ## 3) Surprise/event columns (when `include_surprise=True`)
 
-These are merged from `surprise earning.csv` by ticker + date using backward `merge_asof`:
+These are merged from `SUE_quarterly.csv` by ticker + date using backward `merge_asof`:
 each daily row gets the latest known event on or before that day.
 
 - `surprise_ann_date`: matched announcement date (`anndats`)
