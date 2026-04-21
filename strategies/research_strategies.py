@@ -354,10 +354,14 @@ class MLRidgeStrategy(SignalStrategy):
                 coefs = np.linalg.solve(XtX, X.T @ y)
             except np.linalg.LinAlgError:
                 continue
+            if not np.all(np.isfinite(coefs)):
+                continue
 
             X_today = panel[pos]
-            preds = X_today @ coefs
             valid = np.all(np.isfinite(X_today), axis=1)
+            X_masked = np.where(valid[:, None], X_today, 0.0)
+            with np.errstate(all="ignore"):
+                preds = X_masked @ coefs
             scores_out.iloc[pos] = np.where(valid, preds, np.nan)
 
         return scores_out.ffill()
