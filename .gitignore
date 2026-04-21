@@ -15,3 +15,4 @@ research_outputs_v3/
 /tmp/
 data_cache/
 sp500_universe.pkl
+.claude/
