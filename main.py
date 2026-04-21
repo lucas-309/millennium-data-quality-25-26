@@ -10,13 +10,15 @@ from backtester.data_source import YahooFinanceDataSource, PickleDataSource
 from strategies.mean_reversion import MeanReversionOrderGenerator
 from strategies.momentum_strategy import MomentumOrderGenerator
 from strategies.pairs_trading import PairsTradingOrderGenerator
-from backtester.backtesters.equity_backtest import EquityBacktestEngine
+from strategies.event_driven_earnings import PEADOrderGenerator
+from backtester.backtest_engine import EquityBacktestEngine
 from backtester.metrics import ExtendedMetrics
 
 STRATEGIES = {
     "1": "Mean Reversion",
     "2": "Momentum",
     "3": "Pairs Trading",
+    "4": "Event-Driven Trading",
 }
 
 
@@ -82,10 +84,80 @@ def build_strategy(choice, tickers):
         lookback = int(lookback) if lookback else 60
 
         print(f">> Pairs Trading (pairs={pairs}, lookback={lookback})")
+
+        if len(all_tickers) < 50:
+            print(len(all_tickers))
+            print("WARNING: universe of {len(all_tickers)} is small for a cross-sectional strategy. PEAD needs ~50+ names per announcement date to form stable deciles. Consider using the S&P 500 cache instead.")
+        
         return PairsTradingOrderGenerator(
             pairs=pairs, lookback_window=lookback,
         ), all_tickers
+    
+    elif choice == "4":
+        events_path = input(
+            "Path to Capital IQ events CSV (default: ciqevtstudy_output.zip): "
+        ).strip() or "ciqevtstudy_output.zip"
 
+        holding = input("Holding period in trading days (default: 60): ").strip()
+        holding = int(holding) if holding else 60
+
+        decile = input("Top/bottom decile fraction (default: 0.10): ").strip()
+        decile = float(decile) if decile else 0.10
+
+        quantity = input("Shares per leg (default: 100): ").strip()
+        quantity = int(quantity) if quantity else 100
+
+        min_universe = input(
+            "Min announcements per date for cross-sectional sort (default: 20): "
+        ).strip()
+        min_universe = int(min_universe) if min_universe else 20
+
+        # Load events file. Handles both .csv and .zip (WRDS default is zipped CSV).
+        if not os.path.exists(events_path):
+            print(f"Events file not found: {events_path}")
+            sys.exit(1)
+
+        compression = 'zip' if events_path.endswith('.zip') else None
+        events = pd.read_csv(
+            events_path,
+            compression=compression,
+            parse_dates=['announcedate'],
+        )
+
+        # Normalize to the column names the strategy expects.
+        events = events.rename(columns={'announcedate': 'date'})
+        events['announcement_time'] = (
+            events.get('announcement_time', pd.Series(dtype=str))
+            .astype(str).str.lower().fillna('amc')
+        )
+        # PEAD only cares about earnings events; tag them for the filter
+        # inside PEADOrderGenerator.
+        if 'event_type' not in events.columns:
+            events['event_type'] = 'earnings'
+
+        # Drop events with incomplete post-event windows (announcements
+        # too close to today won't have a full `holding` days of prices).
+        cutoff = pd.Timestamp.today() - pd.Timedelta(days=holding * 2)
+        truncated = (events['date'] > cutoff).sum()
+        if truncated:
+            print(f"Dropping {truncated} events with incomplete post-event windows")
+            events = events[events['date'] <= cutoff]
+
+        # Universe = union of tickers appearing in the events file.
+        # We need price data for every name we might trade.
+        event_tickers = sorted(events['ticker'].dropna().unique().tolist())
+        all_tickers = sorted(set(tickers) | set(event_tickers))
+        print(f">> PEAD (events={len(events)}, universe={len(all_tickers)}, "
+              f"holding={holding}d, decile={decile}, qty={quantity})")
+
+        return PEADOrderGenerator(
+            events=events,
+            holding_days=holding,
+            quantity=quantity,
+            top_decile=decile,
+            min_universe=min_universe,
+        ), all_tickers
+    
     else:
         print("Invalid choice.")
         sys.exit(1)
