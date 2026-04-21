@@ -10,7 +10,7 @@ from backtester.data_source import YahooFinanceDataSource, PickleDataSource, Wha
 from strategies.mean_reversion import MeanReversionOrderGenerator
 from strategies.momentum_strategy import MomentumOrderGenerator
 from strategies.pairs_trading import PairsTradingOrderGenerator
-from backtester.backtesters.equity_backtest import EquityBacktestEngine
+from backtester.backtest_engine import EquityBacktestEngine
 from backtester.metrics import ExtendedMetrics
 
 STRATEGIES = {
@@ -58,6 +58,48 @@ def normalize_tickers_for_source(tickers, source_name: str):
     return [normalize_ticker_for_source(t, source_name) for t in tickers]
 
 
+def get_full_universe_tickers(data_source, source_name: str):
+    """
+    Build ticker universe directly from the selected source.
+    - wharton: all unique tic values in loaded Wharton dataset
+    - yahoo/auto with cache: all tickers in cache dict
+    - yahoo without cache: static SPY holdings snapshot
+    """
+    if source_name == "wharton":
+        if hasattr(data_source, "data") and isinstance(data_source.data, pd.DataFrame) and "tic" in data_source.data.columns:
+            t = data_source.data["tic"].dropna().astype(str).str.strip().str.upper()
+            tickers = sorted(set([x for x in t.tolist() if x]))
+            print(f"Using full Wharton universe: {len(tickers)} tickers.")
+            return tickers
+        print("Warning: could not extract full Wharton universe, falling back to NVDA.")
+        return ["NVDA"]
+
+    if isinstance(data_source, PickleDataSource) and isinstance(data_source.data, dict):
+        tickers = sorted(set([str(k).strip().upper() for k in data_source.data.keys() if str(k).strip()]))
+        print(f"Using full cached universe: {len(tickers)} tickers.")
+        return tickers
+
+    if isinstance(data_source, YahooFinanceDataSource):
+        holdings_path = os.path.join("backtester", "holdings-daily-us-en-spy.xlsx")
+        holdings_df = data_source.read_spy_holdings(holdings_path)
+        if not holdings_df.empty and "Ticker" in holdings_df.columns:
+            tickers = sorted(
+                set(
+                    holdings_df["Ticker"]
+                    .dropna()
+                    .astype(str)
+                    .str.strip()
+                    .str.upper()
+                    .tolist()
+                )
+            )
+            print(f"Using full Yahoo-backed holdings universe: {len(tickers)} tickers.")
+            return tickers
+
+    print("Warning: could not extract full universe for selected source, falling back to NVDA.")
+    return ["NVDA"]
+
+
 def get_data_source(source_choice: str):
     source_choice = source_choice.lower().strip()
 
@@ -82,10 +124,15 @@ def get_data_source(source_choice: str):
     return YahooFinanceDataSource(), False, "yahoo"
 
 
-def prompt_tickers(default):
-    raw = input(f"Enter tickers comma-separated (default: {','.join(default)}): ").strip()
+def prompt_tickers(default, data_source=None, source_name: str = "yahoo"):
+    raw = input(
+        f"Enter tickers comma-separated (default: {','.join(default)}). "
+        f"Use 'full' for full source universe: "
+    ).strip()
     if raw:
-        return [t.strip().upper() for t in raw.split(",")]
+        if raw.lower() == "full":
+            return get_full_universe_tickers(data_source, source_name)
+        return [t.strip().upper() for t in raw.split(",") if t.strip()]
     return default
 
 
@@ -161,16 +208,17 @@ def main():
         print("Invalid selection.")
         return
 
-    default_tickers = ["NVDA"]
-    tickers = prompt_tickers(default_tickers)
-    start_date, end_date = prompt_dates()
     source_choice = prompt_data_source()
+    data_source, used_cache, source_name = get_data_source(source_choice)
+
+    default_tickers = ["NVDA"]
+    tickers = prompt_tickers(default_tickers, data_source=data_source, source_name=source_name)
+    start_date, end_date = prompt_dates()
 
     order_generator, tickers = build_strategy(choice, tickers)
     # Strategy may expand universe (e.g., pairs). Normalize after full ticker list is known.
 
     # Fetch data
-    data_source, used_cache, source_name = get_data_source(source_choice)
     tickers = normalize_tickers_for_source(tickers, source_name)
     data = data_source.get_historical_data(tickers, start_date, end_date)
 

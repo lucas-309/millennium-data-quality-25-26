@@ -177,9 +177,16 @@ class WhartonDataSource(DataSource):
             return
 
         module_dir = Path(__file__).resolve().parent
-        path = Path(self.surprise_path) if self.surprise_path else module_dir / "surprise earning.csv"
-        if not path.is_absolute():
-            path = module_dir / path
+        if self.surprise_path:
+            path = Path(self.surprise_path)
+            if not path.is_absolute():
+                path = module_dir / path
+        else:
+            # Prefer quarterly surprise file; keep legacy fallback for compatibility.
+            preferred = module_dir / "SUE_quarterly.csv"
+            legacy = module_dir / "surprise earning.csv"
+            path = preferred if preferred.exists() else legacy
+
         if not path.exists():
             print(f"Warning: surprise file not found at {path}, skipping surprise merge.")
             return
