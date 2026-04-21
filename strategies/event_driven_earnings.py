@@ -55,6 +55,8 @@ class PEADOrderGenerator(OrderGenerator):
         self.top_decile = top_decile
         self.min_universe = min_universe
 
+    # this variable is now input!
+    # change when Boss loads sue
     def _compute_sue(self, events: pd.DataFrame) -> pd.DataFrame:
         """Standardized Unexpected Earnings = (actual - consensus) / stdev."""
         events = events.copy()
