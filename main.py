@@ -6,7 +6,7 @@ import sys
 if __name__ == "__main__":
     sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from backtester.data_source import YahooFinanceDataSource, PickleDataSource
+from backtester.data_source import YahooFinanceDataSource, PickleDataSource, WhartonDataSource
 from strategies.mean_reversion import MeanReversionOrderGenerator
 from strategies.momentum_strategy import MomentumOrderGenerator
 from strategies.pairs_trading import PairsTradingOrderGenerator
@@ -19,18 +19,67 @@ STRATEGIES = {
     "3": "Pairs Trading",
 }
 
+DATA_SOURCES = {
+    "auto": "Auto (cache -> Yahoo fallback)",
+    "yahoo": "Yahoo Finance",
+    "wharton": "WhartonDataSource",
+}
 
-def get_data_source():
+
+def normalize_ticker_for_source(ticker: str, source_name: str) -> str:
+    """Normalize ticker format for the selected source."""
+    t = ticker.strip().upper()
+    if not t:
+        return t
+
+    if source_name == "wharton":
+        # Wharton/Compustat style
+        alias = {
+            "BRK-B": "BRK.B",
+            "BF-B": "BF.B",
+            "FI": "FISV",
+            "PARA": "PARAA",
+            "-": "USD",
+        }
+        t = alias.get(t, t)
+        t = t.replace("-", ".")
+    else:
+        # Yahoo style
+        alias = {
+            "BRK.B": "BRK-B",
+            "BF.B": "BF-B",
+        }
+        t = alias.get(t, t)
+
+    return t
+
+
+def normalize_tickers_for_source(tickers, source_name: str):
+    return [normalize_ticker_for_source(t, source_name) for t in tickers]
+
+
+def get_data_source(source_choice: str):
+    source_choice = source_choice.lower().strip()
+
+    if source_choice == "wharton":
+        print("Using WhartonDataSource (WhartonDataSource4 default).")
+        return WhartonDataSource(use_trfd=True, include_surprise=True), False, "wharton"
+
+    if source_choice == "yahoo":
+        print("Using Yahoo Finance API.")
+        return YahooFinanceDataSource(), False, "yahoo"
+
+    # auto mode (legacy behavior)
     cache_file = 'sp500_data.pkl'
     if os.path.exists(cache_file):
         print(f"Found cache file: {cache_file}")
         try:
-            return PickleDataSource(cache_file), True
+            return PickleDataSource(cache_file), True, "yahoo"
         except Exception as e:
             print(f"Error loading cache: {e}. Falling back to Yahoo Finance API.")
     else:
         print("Cache file not found, using Yahoo Finance API")
-    return YahooFinanceDataSource(), False
+    return YahooFinanceDataSource(), False, "yahoo"
 
 
 def prompt_tickers(default):
@@ -44,6 +93,17 @@ def prompt_dates():
     start = input("Start date YYYY-MM-DD (default: 2011-01-01): ").strip() or "2011-01-01"
     end = input("End date YYYY-MM-DD (default: 2025-01-01): ").strip() or "2025-01-01"
     return start, end
+
+
+def prompt_data_source():
+    print("\nAvailable data sources:")
+    for key, name in DATA_SOURCES.items():
+        print(f"  - {key}: {name}")
+    choice = input("Select data source [auto/yahoo/wharton] (default: auto): ").strip().lower() or "auto"
+    if choice not in DATA_SOURCES:
+        print(f"Invalid data source '{choice}'. Using 'auto'.")
+        return "auto"
+    return choice
 
 
 def build_strategy(choice, tickers):
@@ -104,16 +164,21 @@ def main():
     default_tickers = ["NVDA"]
     tickers = prompt_tickers(default_tickers)
     start_date, end_date = prompt_dates()
+    source_choice = prompt_data_source()
 
     order_generator, tickers = build_strategy(choice, tickers)
+    # Strategy may expand universe (e.g., pairs). Normalize after full ticker list is known.
 
     # Fetch data
-    data_source, used_cache = get_data_source()
+    data_source, used_cache, source_name = get_data_source(source_choice)
+    tickers = normalize_tickers_for_source(tickers, source_name)
     data = data_source.get_historical_data(tickers, start_date, end_date)
 
     if (data.empty or len(data) < 10) and used_cache:
         print("Cached data was empty or insufficient. Falling back to Yahoo Finance API.")
         data_source = YahooFinanceDataSource()
+        source_name = "yahoo"
+        tickers = normalize_tickers_for_source(tickers, source_name)
         data = data_source.get_historical_data(tickers, start_date, end_date)
 
     if data.empty:
@@ -142,12 +207,14 @@ def main():
     returns = portfolio_values.pct_change().dropna()
 
     # Benchmark
-    benchmark_data = data_source.get_historical_data(["SPY"], start_date, end_date)
+    benchmark_ticker = normalize_ticker_for_source("SPY", source_name)
+    benchmark_data = data_source.get_historical_data([benchmark_ticker], start_date, end_date)
     if benchmark_data.empty:
         print("Warning: Could not fetch benchmark data.")
         benchmark_returns = None
     else:
-        benchmark_returns = benchmark_data["SPY"].pct_change().dropna()
+        benchmark_col = benchmark_ticker if benchmark_ticker in benchmark_data.columns else benchmark_data.columns[0]
+        benchmark_returns = benchmark_data[benchmark_col].pct_change().dropna()
 
     # Monthly holdings snapshot
     print(f"\n### Monthly Holdings ({STRATEGIES[choice]}):")
