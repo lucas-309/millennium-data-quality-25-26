@@ -5,8 +5,15 @@ __pycache__/
 *.pyc
 *.ipynb_checkpoints/
 .env
+.venv/
 momentum_vs_spy.png
 backtester/momentum_vs_spy.png
 *.xlsx
+research_outputs/
+research_outputs_v2/
+research_outputs_v3/
+/tmp/
+data_cache/
+sp500_universe.pkl
+.claude/
 data_quality_materials/
-*.csv
