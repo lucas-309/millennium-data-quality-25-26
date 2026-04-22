@@ -42,9 +42,9 @@ from run_book import (
     annualize,
 )
 from strategies.research_strategies import (
-    CrossSectionalMomentumStrategy,
+    MeanReversionStrategy,
+    MomentumStrategy,
     LowVolatilityStrategy,
-    SmallCapTiltStrategy,
 )
 
 
@@ -62,6 +62,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--burn-in-years", type=float, default=2.0)
     p.add_argument("--no-regime-tilt", action="store_true")
     p.add_argument("--tcost-bps", type=float, default=10.0)
+    p.add_argument("--tearsheet", action="store_true")
     return p.parse_args()
 
 
@@ -99,9 +100,9 @@ def build_sleeves(dataset, args) -> dict[str, pd.Series]:
     )
 
     selection_strategies = [
-        CrossSectionalMomentumStrategy(lookback_days=126, skip_days=21),
+        MomentumStrategy(lookback_days=126, skip_days=21),
+        MeanReversionStrategy(window=100),
         LowVolatilityStrategy(window=126),
-        SmallCapTiltStrategy(),
     ]
     for strat in selection_strategies:
         label = f"{strat.name} + Trend"
@@ -122,8 +123,6 @@ def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    tearsheet_dir = output_dir / "tearsheets"
-    tearsheet_dir.mkdir(parents=True, exist_ok=True)
 
     # Load data
     print(f"Loading Wharton {args.start} -> {args.end}...")
@@ -242,21 +241,23 @@ def main():
         print(f"    {row['start'].date()} -> {row['trough'].date()} -> {rec_str}: "
               f"depth={row['depth']:.2%}")
 
-    # Tearsheets
-    try:
-        generate_tearsheet(
-            result.ensemble_returns, benchmark=benchmark,
-            strategy_name="Multi-Model Ensemble",
-            output_path=tearsheet_dir / "Ensemble.png",
-        )
-        for name, ret in result.model_returns.items():
-            safe_name = name.replace(" ", "_").replace("-", "_")
+    if args.tearsheet:
+        tearsheet_dir = output_dir / "tearsheets"
+        tearsheet_dir.mkdir(parents=True, exist_ok=True)
+        try:
             generate_tearsheet(
-                ret, benchmark=benchmark, strategy_name=name,
-                output_path=tearsheet_dir / f"{safe_name}.png",
+                result.ensemble_returns, benchmark=benchmark,
+                strategy_name="Multi-Model Ensemble",
+                output_path=tearsheet_dir / "Ensemble.png",
             )
-    except Exception as exc:
-        print(f"  tearsheet error: {exc}")
+            for name, ret in result.model_returns.items():
+                safe_name = name.replace(" ", "_").replace("-", "_")
+                generate_tearsheet(
+                    ret, benchmark=benchmark, strategy_name=name,
+                    output_path=tearsheet_dir / f"{safe_name}.png",
+                )
+        except Exception as exc:
+            print(f"  tearsheet error: {exc}")
 
     # Master plot
     fig, ax = plt.subplots(figsize=(14, 8))

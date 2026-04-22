@@ -1,4 +1,0 @@
-metric,value,threshold,pass
-Deflated Sharpe p-value,1.0,0.5,True
-PBO Score,0.014452214452214453,0.5,True
-n_trials,2.0,,True

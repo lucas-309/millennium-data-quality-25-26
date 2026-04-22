@@ -612,6 +612,56 @@ def build_event_study(
     return summary
 
 
+def run_strategy_backtest(
+    dataset: ResearchDataset,
+    strategy: Any,
+    config: BacktestConfig,
+    strategy_output: Optional[Any] = None,
+) -> BacktestResult:
+    """Run one strategy end-to-end through the weight backtester.
+
+    This is the intended collaborator-facing entry point: a strategy only
+    needs to implement `generate(dataset)` and return scores aligned with
+    `dataset.prices`. The helper handles config overrides, target weights,
+    lag tables, event studies, and notes.
+    """
+
+    strategy_output = strategy_output or strategy.generate(dataset)
+    strategy_config = merge_backtest_config(config, strategy_output.backtest_overrides)
+
+    target_weights = build_target_weights(strategy_output.scores, dataset.returns, strategy_config)
+    result = run_weight_backtest(
+        prices=dataset.prices,
+        target_weights=target_weights,
+        config=strategy_config,
+        benchmark_returns=dataset.benchmark_returns,
+        strategy_name=strategy_output.name,
+    )
+    result.lag_table = signal_lag_table(
+        strategy_output.scores,
+        dataset.returns,
+        long_quantile=strategy_config.long_quantile,
+        short_quantile=strategy_config.short_quantile,
+        long_only=strategy_config.long_only,
+    )
+    if strategy_output.uses_event_data and dataset.events is not None:
+        result.event_study = build_event_study(
+            asset_returns=dataset.returns,
+            events=dataset.events,
+            benchmark_returns=dataset.benchmark_returns,
+            event_type=strategy_output.event_type,
+        )
+    result.notes = {
+        "motivation": strategy_output.motivation,
+        "economic_rationale": strategy_output.economic_rationale,
+        "why_it_works": strategy_output.why_it_works,
+        "why_it_fails": strategy_output.why_it_fails,
+        "rebalance_frequency": strategy_config.rebalance_frequency,
+        "construction_method": strategy_config.construction_method,
+    }
+    return result
+
+
 def run_strategy_suite(
     dataset: ResearchDataset,
     strategies: Sequence[Any],
@@ -624,38 +674,12 @@ def run_strategy_suite(
     for strategy in strategies:
         strategy_output = strategy.generate(dataset)
         signal_frames[strategy_output.name] = strategy_output.scores
-        strategy_config = merge_backtest_config(config, strategy_output.backtest_overrides)
-
-        target_weights = build_target_weights(strategy_output.scores, dataset.returns, strategy_config)
-        result = run_weight_backtest(
-            prices=dataset.prices,
-            target_weights=target_weights,
-            config=strategy_config,
-            benchmark_returns=dataset.benchmark_returns,
-            strategy_name=strategy_output.name,
+        result = run_strategy_backtest(
+            dataset=dataset,
+            strategy=strategy,
+            config=config,
+            strategy_output=strategy_output,
         )
-        result.lag_table = signal_lag_table(
-            strategy_output.scores,
-            dataset.returns,
-            long_quantile=strategy_config.long_quantile,
-            short_quantile=strategy_config.short_quantile,
-            long_only=strategy_config.long_only,
-        )
-        if strategy_output.uses_event_data and dataset.events is not None:
-            result.event_study = build_event_study(
-                asset_returns=dataset.returns,
-                events=dataset.events,
-                benchmark_returns=dataset.benchmark_returns,
-                event_type=strategy_output.event_type,
-            )
-        result.notes = {
-            "motivation": strategy_output.motivation,
-            "economic_rationale": strategy_output.economic_rationale,
-            "why_it_works": strategy_output.why_it_works,
-            "why_it_fails": strategy_output.why_it_fails,
-            "rebalance_frequency": strategy_config.rebalance_frequency,
-            "construction_method": strategy_config.construction_method,
-        }
         results[strategy_output.name] = result
         if strategy_output.combine_in_portfolio:
             portfolio_candidates.append(strategy_output.name)

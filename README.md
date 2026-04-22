@@ -1,24 +1,19 @@
 # Millennium Quantitative Research Playground
 
-A backtesting framework for long-only cross-sectional equity factor strategies
-on a local Wharton / Compustat daily dataset. Includes a prop-shop grade alpha
-research toolkit (IC, quantile spread, factor models, walk-forward validation,
-HRP portfolio optimization, stress testing, tearsheets).
+A local equity-research sandbox built around a simple weight-based backtester
+and the included Wharton / Compustat parquet file.
 
-The headline deliverable is `run_book.py` — a 5-sleeve alpha book that combines
-vol-managed equity, trend-filtered equity, and three long-only factor sleeves
-(Momentum, Low Volatility, Small-Cap Tilt) via Hierarchical Risk Parity.
+The repo is set up so collaborators can add straightforward strategies without
+learning a large framework first. The default starter suite is intentionally
+small:
 
-**Best result on Wharton 2000-2025 (165 SP500 names, 10bps t-cost, no lookahead):**
+- `Mean Reversion`
+- `Momentum`
+- `Low Volatility`
 
-| Strategy | Ann Return | Sharpe | Sortino | Max DD |
-|---|---|---|---|---|
-| Equal-Weight Benchmark | +13.63% | 0.760 | 0.973 | -50.88% |
-| Small-Cap Tilt + Trend | +14.57% | **1.095** | 1.341 | -33.92% |
-| **Combined Book (HRP)** | +10.34% | **1.003** | **1.253** | **-23.80%** |
-
-See [SESSION_NOTES.md](SESSION_NOTES.md) for the full session arc, mistakes
-made, and notes for improvement.
+Each strategy only needs to return a score DataFrame aligned to
+`dataset.prices`. The backtester handles ranking, sizing, lag, turnover, and
+transaction costs.
 
 ## Installation
 
@@ -29,61 +24,63 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Data file: `backtester/WhartonDataSource.parquet` is included (19MB, 165
-SP500 names, 2000-2025).
+The sample data file `backtester/WhartonDataSource.parquet` is already checked
+in.
 
 ## Quick Start
 
-### Run the alpha book
+### Run the five-sleeve book
 
 ```sh
 .venv/bin/python run_book.py
 ```
 
-Uses the default window (2000-01-01 to 2025-01-01), 16% target vol, 200-day
-trend filter, long-only top 20% selection sleeves. Outputs go to
-`book_results/` including cumulative returns plots, per-sleeve tearsheets,
-stress test CSV, and a summary table.
+This builds:
 
-Customize:
-```sh
-.venv/bin/python run_book.py \
-  --start 2010-01-01 --end 2025-01-01 \
-  --target-vol 0.16 --max-leverage 2.0 \
-  --sma-window 200 --selection-top-pct 0.20 \
-  --output-dir my_book_results
-```
+- `Vol-Managed Equity`
+- `Trend-Filtered Equity`
+- `Momentum + Trend`
+- `Mean Reversion + Trend`
+- `Low Volatility + Trend`
 
-### Run the research pipeline (multi-signal suite)
+Outputs go to `book_results/`. Tearsheets are opt-in:
 
 ```sh
-.venv/bin/python research_main.py --skip-spy-validation \
-  --stress-test --monte-carlo 500 --tearsheet \
-  --combine-method hrp
+.venv/bin/python run_book.py --tearsheet
 ```
 
-This runs the `build_default_strategy_suite()` slate (Small-Cap Tilt, Value
-Composite, Earnings Revision, Sector-Neutral Dividend Yield, Cross-Sectional
-Momentum, Low Volatility) through the weight-based research backtester with
-lag tables, event studies, tearsheets, stress regimes, Monte Carlo CIs, and
-a combined-book output.
+### Run the research pipeline
 
-## Architecture
+```sh
+.venv/bin/python research_main.py --skip-spy-validation --combine-method hrp
+```
 
-See [guide.md](guide.md) for the current project structure and module index.
+The default research suite is the same simple starter set: Mean Reversion,
+Momentum, and Low Volatility. Optional analysis flags such as
+`--stress-test`, `--monte-carlo`, and `--tearsheet` are available when you
+need them.
 
-Research workflow detail: [PROJECT_PLAN.md](PROJECT_PLAN.md)
+## Strategy Contract
 
-Presentation notes: [PRESENTATION_NOTES.md](PRESENTATION_NOTES.md)
+See [guide.md](guide.md) for the full module map. The important part for
+strategy authors lives in `strategies/research_strategies.py`:
 
-Session notes, mistakes, improvements: [SESSION_NOTES.md](SESSION_NOTES.md)
+1. Inherit from `SignalStrategy`
+2. Implement `generate_scores(self, dataset)`
+3. Return a DataFrame aligned to `dataset.prices`
 
-## Running Tests
+Higher score means a stronger long candidate. You do not need to build weights
+or account for transaction costs inside the strategy.
+
+## Tests
 
 ```sh
 .venv/bin/python -m unittest discover -s unit_tests
 ```
 
-88 tests covering the research framework, alpha research tools, factor
-models, walk-forward validation, portfolio optimizer, stress testing,
-Monte Carlo, tearsheet, execution costs, and risk manager.
+Supporting notes:
+
+- [guide.md](guide.md): project structure and extension points
+- [PROJECT_PLAN.md](PROJECT_PLAN.md): research workflow notes
+- [PRESENTATION_NOTES.md](PRESENTATION_NOTES.md): deck notes
+- [SESSION_NOTES.md](SESSION_NOTES.md): session history and cleanup notes

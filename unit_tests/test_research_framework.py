@@ -9,17 +9,20 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from backtester.data_source import WhartonDataSource
+from backtester.research_data import ResearchDataset
 from backtester.research_backtester import (
     BacktestResult,
     BacktestConfig,
     build_event_study,
     combine_strategy_portfolios,
     build_target_weights,
+    run_strategy_backtest,
     run_weight_backtest,
     select_combination_candidates,
     signal_lag_table,
 )
 from backtester.research_reports import generate_data_quality_report, validate_spy_reconstruction
+from strategies.research_strategies import MeanReversionStrategy, build_default_strategy_suite
 
 
 class TestResearchFramework(unittest.TestCase):
@@ -174,6 +177,44 @@ class TestResearchFramework(unittest.TestCase):
         self.assertTrue(summary["within_threshold"])
         self.assertEqual(summary["constituent_count"], 2)
         self.assertIn("worst_days", summary)
+
+    def test_default_strategy_suite_is_small_and_simple(self):
+        names = [strategy.name for strategy in build_default_strategy_suite()]
+        self.assertEqual(names, ["Mean Reversion", "Momentum", "Low Volatility"])
+
+    def test_run_strategy_backtest_helper(self):
+        dates = pd.date_range("2024-01-01", periods=6, freq="B")
+        prices = pd.DataFrame(
+            {
+                "AAA": [100.0, 99.0, 98.0, 100.0, 101.0, 102.0],
+                "BBB": [100.0, 101.0, 102.0, 101.0, 100.0, 99.0],
+            },
+            index=dates,
+        )
+        returns = prices.pct_change(fill_method=None).fillna(0.0)
+        dataset = ResearchDataset(
+            prices=prices,
+            returns=returns,
+            benchmark_returns=returns.mean(axis=1),
+        )
+        config = BacktestConfig(
+            rebalance_frequency="D",
+            signal_lag=0,
+            transaction_cost_bps=0.0,
+            long_quantile=0.5,
+            short_quantile=0.0,
+            leverage=1.0,
+            max_position_weight=0.5,
+            construction_method="equal_weight",
+            long_only=True,
+            min_names=2,
+        )
+
+        result = run_strategy_backtest(dataset, MeanReversionStrategy(window=2), config)
+
+        self.assertEqual(result.strategy_name, "Mean Reversion")
+        self.assertIn("motivation", result.notes)
+        self.assertFalse(result.target_weights.empty)
 
     def test_combination_candidate_selection_prefers_diversifying_positive_signals(self):
         dates = pd.date_range("2024-01-01", periods=3, freq="B")
