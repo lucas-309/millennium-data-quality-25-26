@@ -20,13 +20,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from backtester.data_source import WhartonDataSource
+from backtester.data_source import WhartonResearchDataSource
 
 DATA_PATH = Path(__file__).resolve().parent / "backtester" / "WhartonDataSource.parquet"
 
 
 def _load_raw(ticker: str) -> pd.DataFrame:
-    source = WhartonDataSource(file_path=str(DATA_PATH), use_total_return=True)
+    source = WhartonResearchDataSource(file_path=str(DATA_PATH), use_total_return=True)
     raw = source.get_raw_data(
         tickers=[ticker],
         start_date="1990-01-01",

@@ -1,0 +1,10 @@
+Wharton Alias Report Summary
+Total input tickers: 865
+direct: 788
+alias_auto: 1
+alias_manual: 2
+not_found: 74
+
+Manual alias hits:
+FI -> FISV
+PARA -> PARAA
