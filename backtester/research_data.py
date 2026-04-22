@@ -6,7 +6,7 @@ from typing import Iterable, Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from .data_source import WhartonDataSource
+from .data_source import WhartonResearchDataSource
 
 DEFAULT_EVENT_COLUMNS = ("anncdate", "recorddate", "paydate", "divdpaydate")
 DEFAULT_METADATA_COLUMNS = (
@@ -81,7 +81,7 @@ def load_wharton_research_dataset(
     min_history: int = 252,
     event_columns: Sequence[str] = DEFAULT_EVENT_COLUMNS,
 ) -> ResearchDataset:
-    source = WhartonDataSource(file_path=file_path, use_total_return=use_total_return)
+    source = WhartonResearchDataSource(file_path=file_path, use_total_return=use_total_return)
     requested_tickers = sorted({ticker.upper() for ticker in tickers}) if tickers else source.list_tickers()
 
     raw = source.get_raw_data(

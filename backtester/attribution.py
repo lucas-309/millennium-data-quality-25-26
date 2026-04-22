@@ -37,19 +37,24 @@ def factor_attribution(
     except np.linalg.LinAlgError:
         return {}
 
-    y_hat = X @ coefs
-    residual = y - y_hat
-    ss_res = (residual ** 2).sum()
-    ss_tot = ((y - y.mean()) ** 2).sum()
-    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    if not np.all(np.isfinite(coefs)):
+        return {}
+
+    with np.errstate(all="ignore"):
+        y_hat = X @ coefs
+        residual = y - y_hat
+        ss_res = float((residual ** 2).sum())
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+    r_squared = 1 - ss_res / ss_tot if ss_tot > 0 and np.isfinite(ss_res) else 0.0
 
     # Standard errors
     n = len(y)
     k = X.shape[1]
     sigma2 = ss_res / max(n - k, 1)
     cov_coefs = np.linalg.pinv(X.T @ X) * sigma2
-    std_errors = np.sqrt(np.diag(cov_coefs))
-    t_stats = coefs / np.where(std_errors > 0, std_errors, np.nan)
+    with np.errstate(all="ignore"):
+        std_errors = np.sqrt(np.diag(cov_coefs))
+        t_stats = coefs / np.where(std_errors > 0, std_errors, np.nan)
 
     # Factor contribution to total return
     factor_contribs = {}

@@ -43,6 +43,7 @@ class BacktestResult:
     lag_table: Optional[pd.DataFrame] = None
     event_study: Optional[pd.DataFrame] = None
     notes: Optional[Dict[str, str]] = None
+    survivorship_audit: Optional[Dict[str, Any]] = None
 
 
 def _get_rebalance_dates(index: pd.DatetimeIndex, frequency: Optional[str]) -> pd.DatetimeIndex:
@@ -236,6 +237,75 @@ def calculate_performance_metrics(
     return metrics
 
 
+def run_survivorship_audit(
+    prices: pd.DataFrame,
+    rebalance_frequency: Optional[str] = "ME",
+    held_columns: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """Point-in-time audit: what the backtester can and cannot see.
+
+    The input universe is *today's* survivors from the data pull. Any company
+    that was delisted, acquired, or went bankrupt before the pull date is
+    structurally missing, so any Sharpe / return number is biased upward.
+    This function quantifies what the run covered and returns a structured
+    payload for display.
+
+    Academic anchor for the magnitude of the bias:
+      * Brown, Goetzmann, Ibbotson, Ross (1992): ~1%/yr on industry indices.
+      * Malkiel (1995): ~1.5%/yr on mutual funds.
+      * Carhart et al. (2002): 0.57–0.92%/yr on fund panels.
+    """
+    if prices.empty:
+        return {}
+
+    window_start = prices.index[0]
+    window_end = prices.index[-1]
+    universe_size = int(prices.shape[1])
+
+    first_valid = prices.apply(lambda col: col.first_valid_index())
+    last_valid = prices.apply(lambda col: col.last_valid_index())
+
+    inception_biased = int((first_valid > window_start).sum())
+    delisted_within_window = int((last_valid < window_end).sum())
+
+    held = set(held_columns) if held_columns is not None else set()
+    traded_first = {tic: ts for tic, ts in first_valid.items() if tic in held and pd.notna(ts)}
+    median_inception = pd.Series(list(traded_first.values())).median() if traded_first else pd.NaT
+
+    active_per_day = prices.notna().sum(axis=1)
+    rebalance_dates = _get_rebalance_dates(prices.index, rebalance_frequency)
+    active_at_rebalance = active_per_day.reindex(rebalance_dates).dropna().astype(int)
+
+    window_years = max((window_end - window_start).days / 365.25, 1e-6)
+    bias_low = 0.5
+    bias_high = 1.5
+
+    return {
+        "universe_size": universe_size,
+        "window_start": str(window_start.date()),
+        "window_end": str(window_end.date()),
+        "window_years": round(window_years, 2),
+        "active_at_start": int(active_per_day.iloc[0]),
+        "active_at_end": int(active_per_day.iloc[-1]),
+        "min_active_in_window": int(active_per_day.min()),
+        "max_active_in_window": int(active_per_day.max()),
+        "inception_biased_count": inception_biased,
+        "delisted_within_window_count": delisted_within_window,
+        "median_inception_for_held": str(median_inception.date()) if pd.notna(median_inception) else None,
+        "active_timeseries": {
+            "dates": [str(d.date()) for d in active_at_rebalance.index],
+            "counts": [int(v) for v in active_at_rebalance.values],
+        },
+        "expected_annual_upward_bias_pct": {"low": bias_low, "high": bias_high},
+        "structural_bias_note": (
+            f"The {universe_size}-ticker universe is the set still trading at the parquet pull date. "
+            f"Failed/acquired/delisted names are absent from the panel entirely, so realized Sharpe "
+            f"and annualized return are upward-biased. Published estimates place the magnitude at "
+            f"roughly {bias_low:.1f}–{bias_high:.1f}% annualized for US equity survivor-only panels."
+        ),
+    }
+
+
 def run_weight_backtest(
     prices: pd.DataFrame,
     target_weights: pd.DataFrame,
@@ -297,6 +367,13 @@ def run_weight_backtest(
         risk_free_rate=config.risk_free_rate,
     )
 
+    held_tickers = actual_weights.columns[(actual_weights.abs().sum(axis=0) > 0)].tolist()
+    survivorship_audit = run_survivorship_audit(
+        prices=prices,
+        rebalance_frequency=config.rebalance_frequency,
+        held_columns=held_tickers,
+    )
+
     return BacktestResult(
         strategy_name=strategy_name,
         target_weights=weights,
@@ -306,6 +383,7 @@ def run_weight_backtest(
         transaction_costs=transaction_costs,
         portfolio_value=portfolio_value,
         metrics=metrics,
+        survivorship_audit=survivorship_audit,
     )
 
 
@@ -558,7 +636,7 @@ def build_event_study(
     events: pd.DataFrame,
     benchmark_returns: Optional[pd.Series] = None,
     event_type: Optional[str] = None,
-    window: int = 30,
+    window: int = 44,
 ) -> pd.DataFrame:
     if events is None or events.empty:
         return pd.DataFrame()

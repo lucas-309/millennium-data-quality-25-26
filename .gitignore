@@ -16,3 +16,7 @@ research_outputs_v3/
 book_results/
 ensemble_results/
 /tmp/
+data_cache/
+sp500_universe.pkl
+.claude/
+data_quality_materials/

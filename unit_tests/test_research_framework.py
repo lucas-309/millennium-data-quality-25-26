@@ -39,7 +39,7 @@ class TestResearchFramework(unittest.TestCase):
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as handle:
             raw.to_csv(handle.name, index=False)
-            source = WhartonDataSource(handle.name, use_total_return=True)
+            source = WhartonResearchDataSource(handle.name, use_total_return=True)
 
         try:
             history = source.get_historical_data(["AAA"], "2024-01-01", "2024-01-31")
@@ -138,7 +138,7 @@ class TestResearchFramework(unittest.TestCase):
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as handle:
             raw.to_csv(handle.name, index=False)
-            source = WhartonDataSource(handle.name, use_total_return=True)
+            source = WhartonResearchDataSource(handle.name, use_total_return=True)
 
         try:
             report = generate_data_quality_report(source, "2024-01-01", "2024-01-31")

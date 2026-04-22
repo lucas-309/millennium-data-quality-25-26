@@ -13,7 +13,7 @@ from backtester.research_reports import (
     generate_data_quality_report,
     validate_spy_reconstruction,
 )
-from backtester.data_source import WhartonDataSource
+from backtester.data_source import WhartonResearchDataSource
 from backtester.stress_test import regime_report, worst_drawdowns
 from backtester.monte_carlo import bootstrap_many_metrics
 from backtester.tearsheet import generate_tearsheet
@@ -184,7 +184,7 @@ def main() -> None:
     if not data_file.exists():
         raise FileNotFoundError(f"Research data file not found: {data_file}")
 
-    wharton_source = WhartonDataSource(file_path=str(data_file), use_total_return=True)
+    wharton_source = WhartonResearchDataSource(file_path=str(data_file), use_total_return=True)
     dataset = load_wharton_research_dataset(
         file_path=str(data_file),
         start_date=args.start_date,
