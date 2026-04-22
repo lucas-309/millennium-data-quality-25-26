@@ -1,0 +1,21 @@
+SPY Verification vs Weighted Constituents (WhartonDataSource4)
+Date range: 2023-01-01 to 2024-01-01
+Wharton source: /Users/bouse/developer/CDS/millennium-data-quality-25-26/backtester/WhartonDataSource4.parquet
+Total holdings in SPY file: 505
+Constituents with complete price series: 495
+Missing/partial constituents dropped: 10
+Verification: FAILED
+Max Difference: 2.449186%
+Mean Difference: 0.285876%
+Spearman Coeff: 0.94447027
+Pearson Coeff: 0.94523338
+
+Worst 5 return-difference days:
+  2023-05-25: 2.449186%
+  2023-08-21: 1.235004%
+  2023-02-02: 1.120197%
+  2023-02-23: 0.904164%
+  2023-08-14: 0.903774%
+
+Sample missing/partial tickers (first 50):
+BF.B FI GEV KVUE MMC PARA SNDK SOLV SW VLTO

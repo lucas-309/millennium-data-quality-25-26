@@ -159,3 +159,31 @@ Configure the annual risk-free rate via constructor: `ExtendedMetrics(risk_free_
 88 tests, all passing. Covers alpha_research, execution, factor_models,
 metrics, portfolio_optimizer, research_framework, risk_manager, stress_test,
 tearsheet, and walk_forward.
+
+## Data Sources & Wharton Integration
+
+The framework ships two Wharton loaders side-by-side:
+
+- `WhartonDataSource` — used by `main.py` for the interactive CLI. Accepts
+  `use_trfd` and `include_surprise` / `surprise_measure` for merging earnings
+  announcements (SUE, surprise) into the daily panel.
+- `WhartonResearchDataSource` — used by `research_main.py`, `run_book.py`,
+  `run_factor_attribution.py`, and the simulation frontend. Exposes raw-panel
+  access (`get_raw_data`), event dates, and a split-adjusted total-return
+  reference price tuned for the `SignalStrategy` pipeline.
+
+### `use_trfd` on `WhartonDataSource`
+
+Wharton natively supplies raw prices (`prccd`), a cumulative split-adjustment
+factor (`ajexdi`), and a daily total-return factor (`trfd`).
+
+**`use_trfd=True` — Fully-Adjusted Price Series (like Yahoo's `Adj Close`):**
+Anchors the most recent split-adjusted price and scales retroactively using
+`trfd`. Cash dividends are smoothed backward into the price action so a big
+special dividend doesn't register as a phantom price crash. Best for
+moving-average style technical signals.
+
+**`use_trfd=False` — Split-only adjustment:**
+Uses `prccd / ajexdi` and keeps cash distributions in a separate `Dividend`
+column, so a backtester that simulates physical cash deposits for dividends
+can credit them explicitly. Best for portfolio-accounting strictness.

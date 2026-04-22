@@ -8,7 +8,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from backtester.data_source import WhartonDataSource
+from backtester.data_source import WhartonResearchDataSource
 from backtester.research_backtester import (
     BacktestResult,
     BacktestConfig,
@@ -36,7 +36,7 @@ class TestResearchFramework(unittest.TestCase):
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as handle:
             raw.to_csv(handle.name, index=False)
-            source = WhartonDataSource(handle.name, use_total_return=True)
+            source = WhartonResearchDataSource(handle.name, use_total_return=True)
 
         try:
             history = source.get_historical_data(["AAA"], "2024-01-01", "2024-01-31")
@@ -135,7 +135,7 @@ class TestResearchFramework(unittest.TestCase):
 
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as handle:
             raw.to_csv(handle.name, index=False)
-            source = WhartonDataSource(handle.name, use_total_return=True)
+            source = WhartonResearchDataSource(handle.name, use_total_return=True)
 
         try:
             report = generate_data_quality_report(source, "2024-01-01", "2024-01-31")

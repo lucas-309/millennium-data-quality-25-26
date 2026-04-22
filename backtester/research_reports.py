@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 import matplotlib
 import pandas as pd
 
-from .data_source import WhartonDataSource, YahooFinanceDataSource
+from .data_source import WhartonResearchDataSource, YahooFinanceDataSource
 from .research_backtester import BacktestResult
 from .research_data import ResearchDataset
 
@@ -22,7 +22,7 @@ SPY_TICKER_REMAP = {
 
 
 def generate_data_quality_report(
-    source: WhartonDataSource,
+    source: WhartonResearchDataSource,
     start_date: str,
     end_date: str,
     tickers: Optional[list[str]] = None,
