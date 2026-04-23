@@ -1,5 +1,11 @@
 """Single-strategy simulator — every knob maps to a real line in the repo.
 
+Universe: today's 503 S&P 500 constituents (Wikipedia), prices sourced from
+the yfinance per-ticker pickle cache under ``data_cache/yfinance``. Names
+that joined the index recently appear from their first available trading
+day and ffill no data before it — the survivorship audit panel quantifies
+the bias.
+
 MVP scope: two strategies (momentum, short-term reversal) and three engine
 knobs (transaction_cost_bps, long_quantile, signal_lag). Other BacktestConfig
 fields are held at sensible defaults; extend CATALOG / ENGINE_PARAMS to grow.
@@ -10,6 +16,7 @@ import hashlib
 import inspect
 import json
 import threading
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -17,18 +24,51 @@ import numpy as np
 import pandas as pd
 
 from backtester import research_backtester as rbt
-from backtester.research_data import ResearchDataset, load_wharton_research_dataset
+from backtester.research_data import ResearchDataset
+from backtester.sp500_universe import load_sp500_universe
+from backtester.yfinance_cache import list_cached_tickers
+from backtester.yfinance_loader import load_yfinance_research_dataset
 from strategies import research_strategies as rs
-
-DATA_PATH = Path(__file__).resolve().parent.parent.parent / "backtester" / "WhartonDataSource.parquet"
 
 _LOCK = threading.Lock()
 _STATE: Dict[str, Any] = {
     "ready": False, "loading": False, "message": "idle", "error": None,
     "dataset": None, "benchmark": None,
     "date_min": None, "date_max": None, "tickers": 0,
+    "universe_label": None,
 }
 _SIM_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+# ---------------------------------------------------------------------------
+# Source-code cleanup — strip the narrative class attributes so the live
+# code panel shows the actual *logic* (constructor + generate_scores), not
+# the motivational prose that drifts with every re-read.
+# ---------------------------------------------------------------------------
+_RATIONALE_ATTRS = {
+    "name", "motivation", "economic_rationale",
+    "why_it_works", "why_it_fails",
+    "uses_event_data", "event_type",
+    "backtest_overrides", "combine_in_portfolio",
+}
+
+
+def _clean_strategy_source(src: str) -> str:
+    cleaned: List[str] = []
+    prev_blank = False
+    for line in src.split("\n"):
+        stripped = line.strip()
+        head = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+        if head in _RATIONALE_ATTRS:
+            continue
+        if stripped == "":
+            if prev_blank:
+                continue
+            prev_blank = True
+        else:
+            prev_blank = False
+        cleaned.append(line)
+    return "\n".join(cleaned).rstrip() + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -40,10 +80,12 @@ STRATEGIES = [
         "cls": rs.CrossSectionalMomentumStrategy,
         "cls_name": "CrossSectionalMomentumStrategy",
         "label": "Momentum",
-        "summary": "Long the top-quintile winners over the last lookback_days (skipping the last skip_days).",
+        "summary": "Rank stocks by their return from (today − lookback_days) to (today − skip_days); long the top quantile.",
         "params": [
-            {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 504, "step": 21},
-            {"name": "skip_days",     "type": "int", "default": 21,  "min": 0,  "max": 63,  "step": 1},
+            {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 504, "step": 21,
+             "help": "Total lookback window for the momentum return, in trading days. 126 ≈ 6 months."},
+            {"name": "skip_days",     "type": "int", "default": 21,  "min": 0,  "max": 63,  "step": 1,
+             "help": "Trading days skipped at the end of the window — drops the 1-month reversal effect (21 ≈ 1 month)."},
         ],
     },
     {
@@ -51,18 +93,22 @@ STRATEGIES = [
         "cls": rs.ShortTermReversalStrategy,
         "cls_name": "ShortTermReversalStrategy",
         "label": "Mean Reversion",
-        "summary": "Long the top-quintile recent losers over the last lookback_days.",
+        "summary": "Score stocks by their negated recent return; long the biggest recent losers, expecting a bounce.",
         "params": [
-            {"name": "lookback_days", "type": "int", "default": 5, "min": 1, "max": 21, "step": 1},
+            {"name": "lookback_days", "type": "int", "default": 5, "min": 1, "max": 21, "step": 1,
+             "help": "Window for the short-horizon return that the signal negates. 5 ≈ 1 week, 21 ≈ 1 month."},
         ],
     },
 ]
 STRATEGY_BY_ID = {s["id"]: s for s in STRATEGIES}
 
 ENGINE_PARAMS = [
-    {"name": "transaction_cost_bps", "type": "float", "default": 10.0, "min": 0.0, "max": 50.0, "step": 0.5},
-    {"name": "long_quantile",        "type": "float", "default": 0.20, "min": 0.05, "max": 0.50, "step": 0.05},
-    {"name": "signal_lag",           "type": "int",   "default": 1,    "min": 0,   "max": 3,    "step": 1},
+    {"name": "transaction_cost_bps", "type": "float", "default": 10.0, "min": 0.0, "max": 50.0, "step": 0.5,
+     "help": "One-way trading cost in basis points. 10 bps = 0.10% per side applied to turnover each rebalance."},
+    {"name": "long_quantile",        "type": "float", "default": 0.20, "min": 0.05, "max": 0.50, "step": 0.05,
+     "help": "Top fraction of the universe held long each month. 0.20 = top 20% by score."},
+    {"name": "signal_lag",           "type": "int",   "default": 1,    "min": 0,   "max": 3,    "step": 1,
+     "help": "Trading days between computing the signal and executing it. 1 means trade on the next session."},
 ]
 
 # Fields held constant — shown in the UI so nothing is hidden.
@@ -87,18 +133,29 @@ FIXED_ENGINE = {
 
 
 # ---------------------------------------------------------------------------
-# Warmup
+# Warmup — load the yfinance S&P 500 cache into a ResearchDataset
 # ---------------------------------------------------------------------------
-def warmup(start: str = "2000-01-01", end: str = "2025-12-31") -> None:
+def warmup(start: str = "2005-01-01", end: str = None) -> None:
+    if end is None:
+        end = date.today().strftime("%Y-%m-%d")
     with _LOCK:
         if _STATE["loading"] or _STATE["ready"]:
             return
         _STATE["loading"] = True
-        _STATE["message"] = "loading Wharton parquet"
+        _STATE["message"] = "loading S&P 500 yfinance cache"
         _STATE["error"] = None
     try:
-        dataset = load_wharton_research_dataset(
-            file_path=str(DATA_PATH), start_date=start, end_date=end,
+        cached = list_cached_tickers()
+        if not cached:
+            raise RuntimeError(
+                "yfinance cache is empty — run `python run_sp500_fetch.py` first"
+            )
+        snap = load_sp500_universe()
+        dataset = load_yfinance_research_dataset(
+            start_date=start, end_date=end,
+            tickers=cached,
+            min_history=21,  # let recent SP500 joiners in; strategies skip NaN-score days
+            sp500_frame=snap.frame,
         )
         with _LOCK:
             _STATE.update({
@@ -107,6 +164,7 @@ def warmup(start: str = "2000-01-01", end: str = "2025-12-31") -> None:
                 "date_min": str(dataset.prices.index.min().date()),
                 "date_max": str(dataset.prices.index.max().date()),
                 "tickers": len(dataset.tickers),
+                "universe_label": f"S&P 500 yfinance ({len(dataset.tickers)} tickers)",
             })
     except Exception as exc:
         with _LOCK:
@@ -123,6 +181,7 @@ def status() -> Dict[str, Any]:
             "message": _STATE["message"], "error": _STATE["error"],
             "date_min": _STATE["date_min"], "date_max": _STATE["date_max"],
             "tickers": _STATE["tickers"],
+            "universe_label": _STATE["universe_label"],
         }
 
 
@@ -132,7 +191,7 @@ def status() -> Dict[str, Any]:
 def catalog() -> Dict[str, Any]:
     strategies = []
     for entry in STRATEGIES:
-        src = inspect.getsource(entry["cls"])
+        src = _clean_strategy_source(inspect.getsource(entry["cls"]))
         strategies.append({
             "id": entry["id"],
             "label": entry["label"],
@@ -294,7 +353,7 @@ def data_overview() -> Dict[str, Any]:
         rows.append(row)
 
     return {
-        "source_file": "backtester/WhartonDataSource.parquet",
+        "source_file": "data_cache/yfinance/*.pkl (current S&P 500)",
         "date_min": _STATE["date_min"],
         "date_max": _STATE["date_max"],
         "n_tickers": len(rows),

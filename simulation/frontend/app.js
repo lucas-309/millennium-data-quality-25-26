@@ -118,6 +118,13 @@
       scheduleRun();
     });
     row.appendChild(inp);
+
+    if (p.help) {
+      const help = document.createElement("p");
+      help.className = "param-help";
+      help.textContent = p.help;
+      row.appendChild(help);
+    }
     return row;
   }
   function formatParamValue(p, v) {
@@ -415,6 +422,8 @@ result  = run_weight_backtest(dataset.prices, weights, config,
           setStatus(`ready · ${s.tickers} tickers · ${s.date_min} → ${s.date_max}`, "ready");
           $("start").min = s.date_min; $("start").max = s.date_max;
           $("end").min = s.date_min; $("end").max = s.date_max;
+          const label = s.universe_label || `${s.tickers} tickers`;
+          $("universe-label").textContent = `universe: ${label}`;
           return true;
         }
         setStatus(`loading · ${s.message}`, "loading");
