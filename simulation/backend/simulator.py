@@ -80,12 +80,16 @@ STRATEGIES = [
         "cls": rs.CrossSectionalMomentumStrategy,
         "cls_name": "CrossSectionalMomentumStrategy",
         "label": "Momentum",
-        "summary": "Rank stocks by their return from (today − lookback_days) to (today − skip_days); long the top quantile.",
+        "summary": "Rank stocks by their return from (today − lookback_days) to (today − skip_days); long the top quantile, optionally short the bottom.",
         "params": [
             {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 504, "step": 21,
              "help": "Return window (126 ≈ 6mo)."},
             {"name": "skip_days",     "type": "int", "default": 21,  "min": 0,  "max": 63,  "step": 1,
              "help": "Skip last N days to drop short-term reversal (21 ≈ 1mo)."},
+        ],
+        "engine_overrides": [
+            {"name": "short_quantile", "type": "float", "default": 0.0, "min": 0.0, "max": 0.40, "step": 0.05,
+             "help": "Bottom fraction sold short (0 = long-only, long-short becomes dollar-neutral)."},
         ],
     },
     {
@@ -98,6 +102,7 @@ STRATEGIES = [
             {"name": "lookback_days", "type": "int", "default": 5, "min": 1, "max": 21, "step": 1,
              "help": "Recent-return window; biggest losers rank highest."},
         ],
+        "engine_overrides": [],
     },
 ]
 STRATEGY_BY_ID = {s["id"]: s for s in STRATEGIES}
@@ -198,6 +203,7 @@ def catalog() -> Dict[str, Any]:
             "cls_name": entry["cls_name"],
             "summary": entry["summary"],
             "params": entry["params"],
+            "engine_overrides": entry.get("engine_overrides", []),
             "source": src,
             "source_file": "strategies/research_strategies.py",
         })
@@ -233,6 +239,70 @@ def _metrics(returns: pd.Series) -> Dict[str, float]:
     }
 
 
+def _normalise_tickers(raw) -> List[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        items = raw.replace("\n", ",").split(",")
+    else:
+        items = list(raw)
+    out = []
+    seen = set()
+    for t in items:
+        t = str(t).strip().upper().replace(".", "-")
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def add_tickers_to_universe(tickers: List[str]) -> Dict[str, Any]:
+    """Fetch any missing tickers into the yfinance cache, then rebuild the
+    in-memory dataset so the new names are immediately usable by the
+    simulator.
+    """
+    from backtester.yfinance_cache import fetch_tickers, list_cached_tickers
+
+    wanted = _normalise_tickers(tickers)
+    if not wanted:
+        raise ValueError("no tickers provided")
+
+    cached_before = set(list_cached_tickers())
+    to_fetch = [t for t in wanted if t not in cached_before]
+
+    fetched: List[str] = []
+    failed: List[Dict[str, str]] = []
+    if to_fetch:
+        results = fetch_tickers(
+            to_fetch,
+            start="2005-01-01",
+            pause_seconds=0.4,
+            max_retries=4,
+            fetch_info=True,
+        )
+        for r in results:
+            if r.ok:
+                fetched.append(r.ticker)
+            else:
+                failed.append({"ticker": r.ticker, "error": r.error or "unknown"})
+
+    # Always rebuild the dataset so newly-cached tickers become visible.
+    with _LOCK:
+        _STATE["ready"] = False
+        _STATE["loading"] = False
+    _SIM_CACHE.clear()
+    warmup()
+
+    return {
+        "requested": wanted,
+        "already_cached": sorted(set(wanted) & cached_before),
+        "fetched": sorted(fetched),
+        "failed": failed,
+        "universe_size_after": _STATE["tickers"],
+    }
+
+
 def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     if not _STATE["ready"]:
         raise RuntimeError("simulator not ready — wait for warmup")
@@ -244,43 +314,92 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
 
     strategy_params = body.get("strategy_params", {}) or {}
     engine_params = body.get("engine_params", {}) or {}
+    engine_overrides_in = body.get("engine_overrides", {}) or {}
+    custom_tickers = _normalise_tickers(body.get("tickers"))
     start = body.get("start") or _STATE["date_min"]
     end = body.get("end") or _STATE["date_max"]
 
-    # Build strategy with only the declared kwargs
+    # Strategy constructor args (whitelisted)
     kw_allowed = {p["name"] for p in strat_entry["params"]}
     strat_kwargs = {k: strategy_params[k] for k in kw_allowed if k in strategy_params}
     strat_instance = strat_entry["cls"](**strat_kwargs)
 
-    # Build BacktestConfig: fixed defaults + the 3 exposed knobs
+    # BacktestConfig: fixed defaults + global engine knobs + per-strategy overrides
     cfg_kwargs = dict(FIXED_ENGINE)
     for p in ENGINE_PARAMS:
         if p["name"] in engine_params:
             cfg_kwargs[p["name"]] = engine_params[p["name"]]
+    for p in strat_entry.get("engine_overrides", []):
+        if p["name"] in engine_overrides_in:
+            cfg_kwargs[p["name"]] = engine_overrides_in[p["name"]]
+    # Auto-flip long_only based on short_quantile — a positive short leg
+    # means we actually want to short (otherwise build_target_weights silently
+    # ignores the short side).
+    cfg_kwargs["long_only"] = float(cfg_kwargs.get("short_quantile", 0.0)) <= 0.0
+
+    # Custom ticker subset — restrict to tickers already in memory; if any
+    # are missing the caller should POST /api/universe/add first.
+    universe_note = None
+    selected_tickers = None
+    if custom_tickers:
+        available = set(_STATE["dataset"].tickers)
+        selected_tickers = sorted(t for t in custom_tickers if t in available)
+        missing = sorted(t for t in custom_tickers if t not in available)
+        if not selected_tickers:
+            raise ValueError(
+                "none of the requested tickers are in the cache — run "
+                "/api/universe/add first. Missing: " + ", ".join(missing)
+            )
+        universe_note = {"selected": selected_tickers, "missing": missing}
+        # Scale min_names for small custom universes so the strategy actually
+        # forms portfolios instead of skipping every rebalance.
+        cfg_kwargs["min_names"] = min(cfg_kwargs.get("min_names", 10), max(2, len(selected_tickers) // 4))
+        # Also cap max_position_weight so the per-leg budget can fit even when
+        # only a handful of names qualify.
+        n_long = max(1, int(len(selected_tickers) * float(cfg_kwargs["long_quantile"])))
+        cfg_kwargs["max_position_weight"] = max(cfg_kwargs.get("max_position_weight", 0.08), 1.0 / n_long)
+
     config = rbt.BacktestConfig(**cfg_kwargs)
 
     key = _cache_key({
         "strategy_id": strategy_id, "strategy_params": strat_kwargs,
         "engine_params": cfg_kwargs, "start": start, "end": end,
+        "tickers": selected_tickers,
     })
     if key in _SIM_CACHE:
         return _SIM_CACHE[key]
 
     dataset = _STATE["dataset"]
     window = (pd.Timestamp(start), pd.Timestamp(end))
+
     prices = dataset.prices.loc[window[0]:window[1]]
-    returns = dataset.returns.loc[window[0]:window[1]]
-    benchmark = _STATE["benchmark"].loc[window[0]:window[1]]
+    if selected_tickers:
+        prices = prices[selected_tickers]
+    prices = prices.dropna(axis=1, how="all")
     if prices.empty:
         raise ValueError("date window produced no price data")
 
+    cols = prices.columns
+    returns = dataset.returns.loc[window[0]:window[1]].reindex(columns=cols)
+    if selected_tickers:
+        benchmark = returns.mean(axis=1, skipna=True).fillna(0.0).rename("custom_universe")
+    else:
+        benchmark = _STATE["benchmark"].loc[window[0]:window[1]]
+
+    def _opt_slice(panel):
+        if panel is None:
+            return None
+        return panel.loc[window[0]:window[1]].reindex(columns=cols)
+
     sliced = ResearchDataset(
-        prices=prices, returns=returns, benchmark_returns=benchmark,
-        volumes=dataset.volumes.loc[window[0]:window[1]] if dataset.volumes is not None else None,
-        dividends=dataset.dividends.loc[window[0]:window[1]] if dataset.dividends is not None else None,
-        eps=dataset.eps.loc[window[0]:window[1]] if dataset.eps is not None else None,
-        market_caps=dataset.market_caps.loc[window[0]:window[1]] if dataset.market_caps is not None else None,
-        metadata=dataset.metadata,
+        prices=prices,
+        returns=returns,
+        benchmark_returns=benchmark,
+        volumes=_opt_slice(dataset.volumes),
+        dividends=_opt_slice(dataset.dividends),
+        eps=_opt_slice(dataset.eps),
+        market_caps=_opt_slice(dataset.market_caps),
+        metadata=dataset.metadata.reindex(cols) if dataset.metadata is not None else None,
         events=dataset.events,
     )
 
@@ -309,6 +428,18 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
             "tcost_drag_annualized": tcost_drag_ann,
         },
         "survivorship_audit": result.survivorship_audit or {},
+        "universe": {
+            "n_tickers": int(prices.shape[1]),
+            "custom": bool(selected_tickers),
+            "selected": selected_tickers if selected_tickers else None,
+            "missing_from_cache": universe_note["missing"] if universe_note else [],
+        },
+        "config": {
+            "long_only": cfg_kwargs["long_only"],
+            "long_quantile": float(cfg_kwargs["long_quantile"]),
+            "short_quantile": float(cfg_kwargs.get("short_quantile", 0.0)),
+            "leverage": float(cfg_kwargs.get("leverage", 1.0)),
+        },
     }
     _SIM_CACHE[key] = response
     return response

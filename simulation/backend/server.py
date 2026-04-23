@@ -10,6 +10,7 @@ Run: `python -m simulation.backend.server` from the repo root.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import traceback
@@ -133,6 +134,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(simulator.status())
             return
 
+        if path == "/api/universe/add":
+            tickers = body.get("tickers") if isinstance(body, dict) else None
+            try:
+                result = simulator.add_tickers_to_universe(tickers)
+                self._send_json(result)
+            except Exception as exc:
+                traceback.print_exc()
+                self._send_json({"error": str(exc)}, status=400)
+            return
+
         if path == "/api/simulate":
             try:
                 result = simulator.run_simulation(body)
@@ -165,7 +176,7 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8765")))
     args = ap.parse_args()
     main(host=args.host, port=args.port)

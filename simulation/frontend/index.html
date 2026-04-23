@@ -30,9 +30,34 @@
             <span class="panel-sub" id="universe-label">universe: loading…</span>
           </header>
           <p class="strategy-summary" id="strategy-summary"></p>
+          <p class="strategy-sizing" id="strategy-sizing"></p>
           <div class="params" id="strategy-params"></div>
+          <div class="params-group" id="override-params-group" hidden>
+            <div class="params-divider"></div>
+            <div class="params" id="override-params"></div>
+          </div>
           <div class="params-divider"></div>
           <div class="params" id="engine-params"></div>
+          <div class="params-divider"></div>
+          <div class="universe-box">
+            <div class="universe-head">
+              <label for="universe-input">Universe</label>
+              <span class="universe-status" id="universe-status">all cached (503)</span>
+            </div>
+            <textarea id="universe-input"
+              placeholder="leave blank for full S&P 500, or paste e.g. AAPL, MSFT, NVDA, JPM"
+              rows="2"></textarea>
+            <div class="universe-actions">
+              <button id="universe-apply" type="button">Apply</button>
+              <button id="universe-fetch" type="button" title="fetch any ticker not yet in the cache">Fetch missing</button>
+              <button id="universe-reset" type="button" title="clear override and use full cache">Reset</button>
+            </div>
+            <p class="universe-help">
+              Enter tickers comma- or newline-separated. Use <em>Apply</em> to restrict the run
+              to just those names; use <em>Fetch missing</em> if a ticker isn't in the cache yet
+              (adds it via yfinance and rebuilds the dataset).
+            </p>
+          </div>
         </div>
       </aside>
 
