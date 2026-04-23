@@ -71,11 +71,25 @@ body {
   padding: 12px;
   padding-bottom: 30px;
 }
-.top-row {
+.app-split {
   display: grid;
   grid-template-columns: 340px 1fr;
   gap: 12px;
-  align-items: stretch;
+  align-items: start;
+}
+.sidebar {
+  position: sticky;
+  top: 64px;
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  align-self: start;
+}
+.sidebar .panel { border-color: var(--accent); }
+.main-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
 }
 
 /* ---- Panel ---- */
@@ -151,6 +165,36 @@ body {
   font-size: 12px;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.param-row .param-value input[type="number"] {
+  width: 64px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  -moz-appearance: textfield;
+}
+.param-row .param-value input[type="number"]::-webkit-outer-spin-button,
+.param-row .param-value input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.param-row .param-value input[type="number"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(88, 193, 255, 0.3);
+}
+.param-row .param-value .param-unit {
+  color: var(--muted);
+  font-size: 11px;
 }
 .param-row input[type="range"] {
   width: 100%;
@@ -418,7 +462,8 @@ body {
 .toast.error { border-color: var(--bad); color: var(--bad); }
 
 @media (max-width: 1100px) {
-  .top-row { grid-template-columns: 1fr; }
+  .app-split { grid-template-columns: 1fr; }
+  .sidebar { position: static; max-height: none; overflow: visible; }
   .metrics-strip { grid-template-columns: repeat(2, 1fr); }
   .data-body { grid-template-columns: 1fr; }
 }
