@@ -100,24 +100,61 @@
     const lbl = document.createElement("label");
     lbl.textContent = p.name;
     lbl.setAttribute("for", inputId);
-    const val = document.createElement("div");
-    val.className = "param-value";
-    val.textContent = formatParamValue(p, p.default);
+
+    const valWrap = document.createElement("div");
+    valWrap.className = "param-value";
+    const numInp = document.createElement("input");
+    numInp.type = "number";
+    numInp.min = p.min; numInp.max = p.max; numInp.step = p.step;
+    numInp.value = p.default;
+    const unit = paramUnit(p);
+    if (unit) {
+      const unitEl = document.createElement("span");
+      unitEl.className = "param-unit";
+      unitEl.textContent = unit;
+      valWrap.appendChild(numInp);
+      valWrap.appendChild(unitEl);
+    } else {
+      valWrap.appendChild(numInp);
+    }
     head.appendChild(lbl);
-    head.appendChild(val);
+    head.appendChild(valWrap);
     row.appendChild(head);
 
-    const inp = document.createElement("input");
-    inp.type = "range";
-    inp.id = inputId;
-    inp.min = p.min; inp.max = p.max; inp.step = p.step;
-    inp.value = p.default;
-    inp.addEventListener("input", () => {
-      val.textContent = formatParamValue(p, +inp.value);
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.id = inputId;
+    slider.min = p.min; slider.max = p.max; slider.step = p.step;
+    slider.value = p.default;
+    row.appendChild(slider);
+
+    const syncFromSlider = () => {
+      numInp.value = slider.value;
+      renderLiveCode();
+      scheduleRun();
+    };
+    const syncFromNumber = () => {
+      // Don't clamp while user is typing — just mirror the value into the
+      // slider (slider clips visually) and trigger a debounced run.
+      const v = parseFloat(numInp.value);
+      if (!Number.isFinite(v)) return;
+      slider.value = String(v);
+      renderLiveCode();
+      scheduleRun();
+    };
+    slider.addEventListener("input", syncFromSlider);
+    numInp.addEventListener("input", syncFromNumber);
+    numInp.addEventListener("change", () => {
+      // On blur / Enter: clamp to range and snap back if the user was out.
+      let v = parseFloat(numInp.value);
+      if (!Number.isFinite(v)) { numInp.value = slider.value; return; }
+      if (v < +p.min) v = +p.min;
+      if (v > +p.max) v = +p.max;
+      numInp.value = String(v);
+      slider.value = String(v);
       renderLiveCode();
       scheduleRun();
     });
-    row.appendChild(inp);
 
     if (p.help) {
       const help = document.createElement("p");
@@ -127,11 +164,11 @@
     }
     return row;
   }
-  function formatParamValue(p, v) {
-    if (p.name === "transaction_cost_bps") return `${v.toFixed(1)} bps`;
-    if (p.name === "long_quantile") return `${(v * 100).toFixed(0)}%`;
-    if (p.type === "float") return v.toFixed(2);
-    return `${v}`;
+  function paramUnit(p) {
+    if (p.name === "transaction_cost_bps") return "bps";
+    if (p.name === "long_quantile") return "frac";
+    if (p.name.endsWith("_days") || p.name === "signal_lag") return "days";
+    return "";
   }
 
   function readParams() {
