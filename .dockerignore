@@ -1,0 +1,29 @@
+.git
+.gitignore
+.claude
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.log
+
+# results / notebooks / large artifacts not needed by the backend
+sp500_results
+ensemble_results
+book_results
+data_analysis
+unit_tests
+**/*.ipynb
+*.md
+factor_attribution.csv
+
+# local-only
+test_wharton.py
+run_*.py
+main.py
+research_main.py
