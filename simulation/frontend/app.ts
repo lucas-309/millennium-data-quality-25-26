@@ -255,7 +255,7 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     renderStrategyParams();
     renderOverrideParams();
     renderEngineParams();
-    updateSizing();
+    // renderLiveCode calls updateSizing at the end, so no explicit call needed here.
     renderLiveCode();
     scheduleRun();
   }

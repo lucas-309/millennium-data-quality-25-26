@@ -1,0 +1,14 @@
+{
+  "name": "strategy-simulator-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript frontend for the strategy simulator. Compiles to app.js which is served statically by simulation/backend/server.py.",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
