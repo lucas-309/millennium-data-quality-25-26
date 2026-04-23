@@ -54,6 +54,24 @@ def _get_rebalance_dates(index: pd.DatetimeIndex, frequency: Optional[str]) -> p
     return pd.DatetimeIndex(calendar.resample(frequency).last().dropna().tolist())
 
 
+def _bucket_count(n_names: int, quantile: float, enabled: bool = True) -> int:
+    if not enabled or n_names <= 0:
+        return 0
+    if float(quantile) <= 0.0:
+        return 0
+    return max(int(n_names * float(quantile)), 1)
+
+
+def _gross_budgets(leverage: float, has_long: bool, has_short: bool) -> tuple[float, float]:
+    if has_long and has_short:
+        return leverage / 2.0, leverage / 2.0
+    if has_long:
+        return leverage, 0.0
+    if has_short:
+        return 0.0, leverage
+    return 0.0, 0.0
+
+
 def _scale_side(weights: pd.Series, target_gross: float, max_position_weight: float, sign: float) -> pd.Series:
     if weights.empty or target_gross <= 0:
         return pd.Series(dtype=float)
@@ -123,11 +141,12 @@ def build_target_weights(
         if len(row) < config.min_names:
             continue
 
-        long_count = max(int(len(row) * config.long_quantile), 1)
-        short_count = 0 if config.long_only else max(int(len(row) * config.short_quantile), 1)
+        long_count = _bucket_count(len(row), config.long_quantile)
+        short_count = _bucket_count(len(row), config.short_quantile, enabled=not config.long_only)
 
-        long_names = row.nlargest(long_count).index
-        short_names = pd.Index([]) if config.long_only else row.nsmallest(short_count).index
+        long_names = row.nlargest(long_count).index if long_count > 0 else pd.Index([])
+        short_names = row.nsmallest(short_count).index if short_count > 0 else pd.Index([])
+        short_names = short_names.difference(long_names)
         selected_names = long_names.union(short_names)
 
         if len(selected_names) == 0:
@@ -138,8 +157,19 @@ def build_target_weights(
             history = history.dropna(axis=1, thresh=max(config.mean_variance_lookback // 2, 10)).fillna(0.0)
             selected_signals = row.reindex(history.columns)
             raw = _mean_variance_weights(selected_signals, history, config)
-            long_signal = raw[raw > 0]
-            short_signal = raw[raw < 0].abs()
+            long_signal = raw.reindex(long_names).dropna()
+            short_signal = raw.reindex(short_names).dropna()
+
+            if short_names.empty:
+                long_signal = long_signal.clip(lower=0.0)
+            else:
+                long_signal = long_signal[long_signal > 0]
+
+            if long_names.empty:
+                short_signal = short_signal.clip(upper=0.0)
+            else:
+                short_signal = short_signal[short_signal < 0]
+            short_signal = short_signal.abs()
         else:
             if config.construction_method == "inverse_vol":
                 risk_estimate = (1.0 / volatility.loc[date].replace(0, np.nan)).reindex(selected_names)
@@ -150,8 +180,11 @@ def build_target_weights(
             short_signal = risk_estimate.reindex(short_names).dropna()
 
         row_weights = pd.Series(0.0, index=asset_returns.columns, dtype=float)
-        long_budget = config.leverage if config.long_only else config.leverage / 2.0
-        short_budget = 0.0 if config.long_only else config.leverage / 2.0
+        long_budget, short_budget = _gross_budgets(
+            config.leverage,
+            has_long=not long_signal.empty,
+            has_short=(not config.long_only) and (not short_signal.empty),
+        )
 
         row_weights.loc[long_signal.index] = _scale_side(
             long_signal,
@@ -421,15 +454,25 @@ def signal_long_short_returns(
     valid_counts = common_mask.sum(axis=1)
 
     rank_percentiles = aligned_scores.where(common_mask).rank(axis=1, method="average", pct=True)
-    long_mask = rank_percentiles >= (1.0 - long_quantile)
-    long_leg = forward_returns.where(long_mask).mean(axis=1, skipna=True)
+    has_long = float(long_quantile) > 0.0
+    has_short = (not long_only) and float(short_quantile) > 0.0
 
-    if long_only:
-        strategy_returns = long_leg
+    if has_long:
+        long_mask = rank_percentiles >= (1.0 - long_quantile)
+        long_leg = forward_returns.where(long_mask).mean(axis=1, skipna=True)
     else:
+        long_leg = pd.Series(0.0, index=forward_returns.index, dtype=float)
+
+    if has_short:
         short_mask = rank_percentiles <= short_quantile
         short_leg = forward_returns.where(short_mask).mean(axis=1, skipna=True)
+    else:
+        short_leg = pd.Series(0.0, index=forward_returns.index, dtype=float)
+
+    if has_long or has_short:
         strategy_returns = long_leg - short_leg
+    else:
+        strategy_returns = pd.Series(np.nan, index=forward_returns.index, dtype=float)
 
     strategy_returns[valid_counts < 5] = np.nan
     return strategy_returns

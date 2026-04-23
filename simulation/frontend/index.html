@@ -22,77 +22,108 @@
   </header>
 
   <main class="layout">
-    <section class="top-row">
-      <div class="panel controls-panel">
-        <header class="panel-head">
-          <h3>Parameters</h3>
-          <span class="panel-sub" id="strategy-summary"></span>
-        </header>
-        <div class="params" id="strategy-params"></div>
-        <div class="params-divider"></div>
-        <div class="params" id="engine-params"></div>
-      </div>
-
-      <div class="panel code-panel">
-        <header class="panel-head">
-          <h3>Live code</h3>
-          <span class="panel-sub" id="code-path">strategies/research_strategies.py + backtester/research_backtester.py</span>
-        </header>
-        <pre class="code-block"><code id="code-live" class="language-python"></code></pre>
-      </div>
-    </section>
-
-    <div class="metrics-strip">
-      <div class="m-card"><div class="m-label">Sharpe</div><div class="m-value" id="m-sharpe">—</div><div class="m-sub" id="m-sharpe-sub"></div></div>
-      <div class="m-card"><div class="m-label">Ann. return</div><div class="m-value" id="m-return">—</div><div class="m-sub" id="m-return-sub"></div></div>
-      <div class="m-card"><div class="m-label">Max drawdown</div><div class="m-value" id="m-dd">—</div><div class="m-sub" id="m-dd-sub"></div></div>
-      <div class="m-card"><div class="m-label">T-cost drag / yr</div><div class="m-value" id="m-tcost">—</div><div class="m-sub" id="m-tcost-sub"></div></div>
-    </div>
-
-    <div class="panel">
-      <header class="panel-head">
-        <h3>Equity curve</h3>
-        <span class="panel-sub">strategy (net of t-cost) vs equal-weight universe</span>
-      </header>
-      <div id="chart-equity" class="chart"></div>
-    </div>
-
-    <div class="panel">
-      <header class="panel-head">
-        <h3>Survivorship audit</h3>
-        <span class="panel-sub" id="audit-sub">point-in-time view of the universe this run saw</span>
-      </header>
-      <div class="audit-body">
-        <div class="audit-stats" id="audit-stats"></div>
-        <div id="chart-audit" class="audit-chart"></div>
-        <p class="audit-note" id="audit-note"></p>
-      </div>
-    </div>
-
-    <div class="panel">
-      <header class="panel-head">
-        <h3>Data inspector</h3>
-        <span class="panel-sub" id="data-sub"></span>
-      </header>
-      <div class="data-body">
-        <div class="data-left">
-          <input id="ticker-search" class="search" placeholder="Filter tickers…" />
-          <div class="table-wrap">
-            <table class="ticker-table" id="ticker-table">
-              <thead>
-                <tr>
-                  <th>Ticker</th><th>Name</th><th>Sector</th>
-                  <th style="text-align: right">Start</th>
-                  <th style="text-align: right">End</th>
-                  <th style="text-align: right">Total ret</th>
-                </tr>
-              </thead>
-              <tbody id="ticker-tbody"></tbody>
-            </table>
+    <div class="app-split">
+      <aside class="sidebar">
+        <div class="panel controls-panel">
+          <header class="panel-head">
+            <h3>Parameters</h3>
+            <span class="panel-sub" id="universe-label">universe: loading…</span>
+          </header>
+          <p class="strategy-summary" id="strategy-summary"></p>
+          <p class="strategy-sizing" id="strategy-sizing"></p>
+          <div class="params" id="strategy-params"></div>
+          <div class="params-group" id="override-params-group" hidden>
+            <div class="params-divider"></div>
+            <div class="params" id="override-params"></div>
+          </div>
+          <div class="params-divider"></div>
+          <div class="params" id="engine-params"></div>
+          <div class="params-divider"></div>
+          <div class="universe-box">
+            <div class="universe-head">
+              <label for="universe-input">Universe</label>
+              <span class="universe-status" id="universe-status">all cached (503)</span>
+            </div>
+            <textarea id="universe-input"
+              placeholder="leave blank for full S&P 500, or paste e.g. AAPL, MSFT, NVDA, JPM"
+              rows="2"></textarea>
+            <div class="universe-actions">
+              <button id="universe-apply" type="button">Apply</button>
+              <button id="universe-fetch" type="button" title="exclude these tickers — run on everything else in the cache">Exclude</button>
+              <button id="universe-reset" type="button" title="clear override and use full cache">Reset</button>
+            </div>
+            <p class="universe-help">
+              Enter tickers comma- or newline-separated. Use <em>Apply</em> to restrict the run
+              to <em>just those</em> names; use <em>Exclude</em> to run on
+              <em>everything except</em> those names. Tickers not in the cache are ignored
+              (this button never mutates the cached universe).
+            </p>
           </div>
         </div>
-        <div class="data-right" id="data-right">
-          <div class="data-empty">Pick a ticker to preview its price history.</div>
+      </aside>
+
+      <div class="main-col">
+        <div class="panel code-panel">
+          <header class="panel-head">
+            <h3>Live code</h3>
+            <span class="panel-sub" id="code-path">strategies/research_strategies.py + backtester/research_backtester.py</span>
+          </header>
+          <pre class="code-block"><code id="code-live" class="language-python"></code></pre>
+        </div>
+
+        <div class="metrics-strip">
+          <div class="m-card"><div class="m-label">Sharpe</div><div class="m-value" id="m-sharpe">—</div><div class="m-sub" id="m-sharpe-sub"></div></div>
+          <div class="m-card"><div class="m-label">Ann. return</div><div class="m-value" id="m-return">—</div><div class="m-sub" id="m-return-sub"></div></div>
+          <div class="m-card"><div class="m-label">Max drawdown</div><div class="m-value" id="m-dd">—</div><div class="m-sub" id="m-dd-sub"></div></div>
+          <div class="m-card"><div class="m-label">T-cost drag / yr</div><div class="m-value" id="m-tcost">—</div><div class="m-sub" id="m-tcost-sub"></div></div>
+        </div>
+
+        <div class="panel">
+          <header class="panel-head">
+            <h3>Equity curve</h3>
+            <span class="panel-sub">strategy (net of t-cost) vs equal-weight universe</span>
+          </header>
+          <div id="chart-equity" class="chart"></div>
+        </div>
+
+        <div class="panel">
+          <header class="panel-head">
+            <h3>Survivorship audit</h3>
+            <span class="panel-sub" id="audit-sub">point-in-time view of the universe this run saw</span>
+          </header>
+          <div class="audit-body">
+            <div class="audit-stats" id="audit-stats"></div>
+            <div id="chart-audit" class="audit-chart"></div>
+            <p class="audit-note" id="audit-note"></p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <header class="panel-head">
+            <h3>Data inspector</h3>
+            <span class="panel-sub" id="data-sub"></span>
+          </header>
+          <div class="data-body">
+            <div class="data-left">
+              <input id="ticker-search" class="search" placeholder="Filter tickers…" />
+              <div class="table-wrap">
+                <table class="ticker-table" id="ticker-table">
+                  <thead>
+                    <tr>
+                      <th>Ticker</th><th>Name</th><th>Sector</th>
+                      <th style="text-align: right">Start</th>
+                      <th style="text-align: right">End</th>
+                      <th style="text-align: right">Total ret</th>
+                    </tr>
+                  </thead>
+                  <tbody id="ticker-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+            <div class="data-right" id="data-right">
+              <div class="data-empty">Pick a ticker to preview its price history.</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
