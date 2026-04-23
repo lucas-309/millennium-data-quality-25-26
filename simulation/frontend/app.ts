@@ -155,6 +155,11 @@ interface AppState {
   universeSize: number;
   fullUniverseSize: number;
   customTickers: string[];
+  // True when the user has explicitly narrowed the universe. Lets us
+  // distinguish "empty filter = user deliberately picked 0 tickers" from
+  // "empty filter = default full cache", which used to get conflated and
+  // run the full universe on what should have been an empty result.
+  hasCustomFilter: boolean;
 }
 
 interface RunPayload {
@@ -183,6 +188,7 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     universeSize: 0,
     fullUniverseSize: 0,
     customTickers: [],
+    hasCustomFilter: false,
   };
 
   const plotLayout: Record<string, unknown> = {
@@ -827,10 +833,10 @@ result  = run_weight_backtest(dataset.prices, weights, config,
   function refreshUniverseStatus(): void {
     const status = document.getElementById("universe-status");
     if (!status) return;
-    const n = state.customTickers.length;
-    if (!n) {
+    if (!state.hasCustomFilter) {
       status.textContent = `all cached (${state.fullUniverseSize || "?"})`;
     } else {
+      const n = state.customTickers.length;
       status.textContent = `custom: ${n} ticker${n === 1 ? "" : "s"}`;
     }
   }
@@ -840,7 +846,13 @@ result  = run_weight_backtest(dataset.prices, weights, config,
   const resetBtn = document.getElementById("universe-reset");
   if (applyBtn && universeInput) {
     applyBtn.addEventListener("click", () => {
-      state.customTickers = parseUniverseText(universeInput.value);
+      const tickers = parseUniverseText(universeInput.value);
+      if (!tickers.length) {
+        toast("paste tickers to restrict to", true);
+        return;
+      }
+      state.customTickers = tickers;
+      state.hasCustomFilter = true;
       refreshUniverseStatus();
       updateSizing();
       scheduleRun();
@@ -850,47 +862,47 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     resetBtn.addEventListener("click", () => {
       universeInput.value = "";
       state.customTickers = [];
+      state.hasCustomFilter = false;
       refreshUniverseStatus();
       updateSizing();
       scheduleRun();
     });
   }
   if (fetchBtn && universeInput) {
-    fetchBtn.addEventListener("click", async () => {
-      const tickers = parseUniverseText(universeInput.value);
-      if (!tickers.length) {
-        toast("paste some tickers first", true);
+    // "Exclude" — take the typed list out of the current cached universe.
+    // Does NOT call /api/universe/add, because that endpoint rebuilds the
+    // global dataset from every cached pickle and would permanently add
+    // typed non-SP500 names to the baseline (Codex adversarial finding).
+    fetchBtn.addEventListener("click", () => {
+      const excluded = parseUniverseText(universeInput.value);
+      if (!excluded.length) {
+        toast("paste tickers to exclude", true);
         return;
       }
-      fetchBtn.disabled = true;
-      setStatus(`fetching ${tickers.length} ticker${tickers.length === 1 ? "" : "s"}…`, "loading");
-      try {
-        const res = await fetch("/api/universe/add", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tickers }),
-        });
-        const data = (await res.json()) as UniverseAddResponse;
-        if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-        state.fullUniverseSize = data.universe_size_after;
-        state.customTickers = tickers;
-        const fetched = data.fetched.length;
-        const failed = data.failed.length;
-        toast(
-          `fetched ${fetched}, already cached ${data.already_cached.length}, failed ${failed}`,
-          failed > 0,
-          5000,
-        );
-        refreshUniverseStatus();
-        updateSizing();
-        scheduleRun();
-      } catch (exc) {
-        const msg = exc instanceof Error ? exc.message : String(exc);
-        toast(`fetch failed: ${msg}`, true, 6000);
-        setStatus(`error: ${msg}`, "error");
-      } finally {
-        fetchBtn.disabled = false;
+      const allCached = (state.dataOverview?.tickers || []).map((r) => r.ticker);
+      if (!allCached.length) {
+        toast("data inspector hasn't loaded yet — try again in a second", true);
+        return;
       }
+      const excludeSet = new Set(excluded);
+      const complement = allCached.filter((t) => !excludeSet.has(t));
+      if (!complement.length) {
+        toast("exclusion list covers every cached ticker — no universe left to run", true, 6000);
+        return;
+      }
+      const matched = allCached.filter((t) => excludeSet.has(t)).length;
+      const missing = excluded.length - matched;
+      state.customTickers = complement;
+      state.hasCustomFilter = true;
+      const suffix = missing ? ` · ${missing} not in cache (ignored)` : "";
+      toast(
+        `excluded ${matched} · running on ${complement.length} ticker${complement.length === 1 ? "" : "s"}${suffix}`,
+        false,
+        4000,
+      );
+      refreshUniverseStatus();
+      updateSizing();
+      scheduleRun();
     });
   }
 
