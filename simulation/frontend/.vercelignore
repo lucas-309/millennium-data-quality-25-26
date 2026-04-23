@@ -1,6 +1,2 @@
 node_modules/
-app.ts
-tsconfig.json
-package.json
-package-lock.json
 *.tsbuildinfo
