@@ -257,6 +257,11 @@ def _normalise_tickers(raw) -> List[str]:
     return out
 
 
+#: Cap a single /api/universe/add call so a typo'd paste can't block the server
+#: for minutes or trip yfinance's rate limiter.
+_MAX_UNIVERSE_ADD = 50
+
+
 def add_tickers_to_universe(tickers: List[str]) -> Dict[str, Any]:
     """Fetch any missing tickers into the yfinance cache, then rebuild the
     in-memory dataset so the new names are immediately usable by the
@@ -267,6 +272,11 @@ def add_tickers_to_universe(tickers: List[str]) -> Dict[str, Any]:
     wanted = _normalise_tickers(tickers)
     if not wanted:
         raise ValueError("no tickers provided")
+    if len(wanted) > _MAX_UNIVERSE_ADD:
+        raise ValueError(
+            f"too many tickers ({len(wanted)}); max per request is {_MAX_UNIVERSE_ADD}. "
+            "Split the list and submit in batches."
+        )
 
     cached_before = set(list_cached_tickers())
     to_fetch = [t for t in wanted if t not in cached_before]
@@ -304,8 +314,16 @@ def add_tickers_to_universe(tickers: List[str]) -> Dict[str, Any]:
 
 
 def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
-    if not _STATE["ready"]:
-        raise RuntimeError("simulator not ready — wait for warmup")
+    # Snapshot the shared dataset under the lock so a concurrent
+    # add_tickers_to_universe rebuild can't swap the panel out from under us
+    # mid-run (KeyError on dropped columns, stale prices, etc.).
+    with _LOCK:
+        if not _STATE["ready"]:
+            raise RuntimeError("simulator not ready — wait for warmup")
+        dataset = _STATE["dataset"]
+        benchmark_full = _STATE["benchmark"]
+        date_min = _STATE["date_min"]
+        date_max = _STATE["date_max"]
 
     strategy_id = body.get("strategy_id", "momentum")
     if strategy_id not in STRATEGY_BY_ID:
@@ -316,8 +334,8 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     engine_params = body.get("engine_params", {}) or {}
     engine_overrides_in = body.get("engine_overrides", {}) or {}
     custom_tickers = _normalise_tickers(body.get("tickers"))
-    start = body.get("start") or _STATE["date_min"]
-    end = body.get("end") or _STATE["date_max"]
+    start = body.get("start") or date_min
+    end = body.get("end") or date_max
 
     # Strategy constructor args (whitelisted)
     kw_allowed = {p["name"] for p in strat_entry["params"]}
@@ -342,7 +360,7 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     universe_note = None
     selected_tickers = None
     if custom_tickers:
-        available = set(_STATE["dataset"].tickers)
+        available = set(dataset.tickers)
         selected_tickers = sorted(t for t in custom_tickers if t in available)
         missing = sorted(t for t in custom_tickers if t not in available)
         if not selected_tickers:
@@ -369,7 +387,6 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     if key in _SIM_CACHE:
         return _SIM_CACHE[key]
 
-    dataset = _STATE["dataset"]
     window = (pd.Timestamp(start), pd.Timestamp(end))
 
     prices = dataset.prices.loc[window[0]:window[1]]
@@ -384,7 +401,7 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     if selected_tickers:
         benchmark = returns.mean(axis=1, skipna=True).fillna(0.0).rename("custom_universe")
     else:
-        benchmark = _STATE["benchmark"].loc[window[0]:window[1]]
+        benchmark = benchmark_full.loc[window[0]:window[1]]
 
     def _opt_slice(panel):
         if panel is None:
