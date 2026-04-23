@@ -83,9 +83,9 @@ STRATEGIES = [
         "summary": "Rank stocks by their return from (today − lookback_days) to (today − skip_days); long the top quantile.",
         "params": [
             {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 504, "step": 21,
-             "help": "Total lookback window for the momentum return, in trading days. 126 ≈ 6 months."},
+             "help": "Return window (126 ≈ 6mo)."},
             {"name": "skip_days",     "type": "int", "default": 21,  "min": 0,  "max": 63,  "step": 1,
-             "help": "Trading days skipped at the end of the window — drops the 1-month reversal effect (21 ≈ 1 month)."},
+             "help": "Skip last N days to drop short-term reversal (21 ≈ 1mo)."},
         ],
     },
     {
@@ -96,7 +96,7 @@ STRATEGIES = [
         "summary": "Score stocks by their negated recent return; long the biggest recent losers, expecting a bounce.",
         "params": [
             {"name": "lookback_days", "type": "int", "default": 5, "min": 1, "max": 21, "step": 1,
-             "help": "Window for the short-horizon return that the signal negates. 5 ≈ 1 week, 21 ≈ 1 month."},
+             "help": "Recent-return window; biggest losers rank highest."},
         ],
     },
 ]
@@ -104,11 +104,11 @@ STRATEGY_BY_ID = {s["id"]: s for s in STRATEGIES}
 
 ENGINE_PARAMS = [
     {"name": "transaction_cost_bps", "type": "float", "default": 10.0, "min": 0.0, "max": 50.0, "step": 0.5,
-     "help": "One-way trading cost in basis points. 10 bps = 0.10% per side applied to turnover each rebalance."},
+     "help": "Per-side trading cost in bps."},
     {"name": "long_quantile",        "type": "float", "default": 0.20, "min": 0.05, "max": 0.50, "step": 0.05,
-     "help": "Top fraction of the universe held long each month. 0.20 = top 20% by score."},
+     "help": "Top fraction held long (0.20 = top 20%)."},
     {"name": "signal_lag",           "type": "int",   "default": 1,    "min": 0,   "max": 3,    "step": 1,
-     "help": "Trading days between computing the signal and executing it. 1 means trade on the next session."},
+     "help": "Days between signal and execution."},
 ]
 
 # Fields held constant — shown in the UI so nothing is hidden.
