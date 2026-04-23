@@ -17,6 +17,7 @@ from backtester.research_backtester import (
     build_target_weights,
     run_weight_backtest,
     select_combination_candidates,
+    signal_long_short_returns,
     signal_lag_table,
 )
 from backtester.research_reports import generate_data_quality_report, validate_spy_reconstruction
@@ -80,6 +81,98 @@ class TestResearchFramework(unittest.TestCase):
         self.assertGreater(result.portfolio_value.iloc[-1], config.initial_cash)
         self.assertGreater(result.turnover.max(), 0.0)
         self.assertGreaterEqual(result.transaction_costs.sum(), 0.0)
+
+    def test_zero_short_quantile_does_not_create_shorts(self):
+        dates = pd.date_range("2024-01-01", periods=5, freq="B")
+        scores = pd.DataFrame(
+            {
+                "AAA": [3.0] * 5,
+                "BBB": [2.0] * 5,
+                "CCC": [1.0] * 5,
+            },
+            index=dates,
+        )
+        asset_returns = pd.DataFrame(0.0, index=dates, columns=scores.columns)
+        config = BacktestConfig(
+            rebalance_frequency="D",
+            long_quantile=0.34,
+            short_quantile=0.0,
+            leverage=1.0,
+            max_position_weight=1.0,
+            construction_method="equal_weight",
+            long_only=False,
+            min_names=1,
+        )
+
+        weights = build_target_weights(scores, asset_returns, config)
+        first_row = weights.iloc[0]
+
+        self.assertFalse((first_row < 0).any())
+        self.assertAlmostEqual(first_row.sum(), 1.0)
+        self.assertAlmostEqual(first_row.abs().sum(), 1.0)
+
+    def test_zero_long_quantile_allows_full_short_book(self):
+        dates = pd.date_range("2024-01-01", periods=5, freq="B")
+        scores = pd.DataFrame(
+            {
+                "AAA": [3.0] * 5,
+                "BBB": [2.0] * 5,
+                "CCC": [1.0] * 5,
+            },
+            index=dates,
+        )
+        asset_returns = pd.DataFrame(0.0, index=dates, columns=scores.columns)
+        config = BacktestConfig(
+            rebalance_frequency="D",
+            long_quantile=0.0,
+            short_quantile=0.34,
+            leverage=1.0,
+            max_position_weight=1.0,
+            construction_method="equal_weight",
+            long_only=False,
+            min_names=1,
+        )
+
+        weights = build_target_weights(scores, asset_returns, config)
+        first_row = weights.iloc[0]
+
+        self.assertFalse((first_row > 0).any())
+        self.assertAlmostEqual(first_row.sum(), -1.0)
+        self.assertAlmostEqual(first_row.abs().sum(), 1.0)
+
+    def test_signal_long_short_returns_handles_zero_short_quantile(self):
+        dates = pd.date_range("2024-01-01", periods=6, freq="B")
+        forward_returns = pd.DataFrame(
+            {
+                "AAA": [0.01] * 6,
+                "BBB": [0.00] * 6,
+                "CCC": [-0.01] * 6,
+                "DDD": [-0.02] * 6,
+                "EEE": [0.02] * 6,
+            },
+            index=dates,
+        )
+        scores = pd.DataFrame(
+            {
+                "AAA": [5.0] * 6,
+                "BBB": [4.0] * 6,
+                "CCC": [3.0] * 6,
+                "DDD": [2.0] * 6,
+                "EEE": [1.0] * 6,
+            },
+            index=dates,
+        )
+
+        returns = signal_long_short_returns(
+            scores,
+            forward_returns,
+            long_quantile=0.2,
+            short_quantile=0.0,
+            long_only=False,
+        )
+
+        self.assertFalse(returns.dropna().empty)
+        self.assertTrue((returns.dropna() > 0).all())
 
     def test_signal_lag_and_event_study_outputs(self):
         dates = pd.date_range("2024-01-01", periods=80, freq="B")
