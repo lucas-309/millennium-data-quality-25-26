@@ -49,13 +49,14 @@
               rows="2"></textarea>
             <div class="universe-actions">
               <button id="universe-apply" type="button">Apply</button>
-              <button id="universe-fetch" type="button" title="fetch any ticker not yet in the cache">Fetch missing</button>
+              <button id="universe-fetch" type="button" title="exclude these tickers — run on everything else in the cache (fetches any missing via yfinance first)">Fetch missing</button>
               <button id="universe-reset" type="button" title="clear override and use full cache">Reset</button>
             </div>
             <p class="universe-help">
               Enter tickers comma- or newline-separated. Use <em>Apply</em> to restrict the run
-              to just those names; use <em>Fetch missing</em> if a ticker isn't in the cache yet
-              (adds it via yfinance and rebuilds the dataset).
+              to <em>just those</em> names; use <em>Fetch missing</em> to run on
+              <em>everything except</em> those names (any typed ticker not yet in the cache is
+              fetched via yfinance first so the dataset stays current).
             </p>
           </div>
         </div>
