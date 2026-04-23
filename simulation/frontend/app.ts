@@ -514,12 +514,17 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     setStatus("running simulation…", "loading");
     try {
       const p = readParams();
+      // Send tickers:null only when NO custom filter is active. An empty
+      // array with hasCustomFilter=true means "user explicitly narrowed
+      // to nothing" and should bubble up as a backend error, not silently
+      // flip back to the full universe.
+      const tickers = state.hasCustomFilter ? p.tickers : null;
       const body = {
         strategy_id: state.currentStrategy!.id,
         strategy_params: p.strategyParams,
         engine_params: p.engineParams,
         engine_overrides: p.engineOverrides,
-        tickers: p.tickers.length ? p.tickers : null,
+        tickers,
         start: p.start,
         end: p.end,
       };
