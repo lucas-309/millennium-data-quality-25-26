@@ -333,7 +333,19 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     strategy_params = body.get("strategy_params", {}) or {}
     engine_params = body.get("engine_params", {}) or {}
     engine_overrides_in = body.get("engine_overrides", {}) or {}
-    custom_tickers = _normalise_tickers(body.get("tickers"))
+    # Distinguish "tickers not provided / null" (= full universe) from
+    # "tickers: [] explicitly" (= user narrowed to zero names, should fail
+    # loudly rather than silently run the full cache).
+    raw_tickers = body.get("tickers")
+    if raw_tickers is None:
+        custom_tickers = []
+    else:
+        custom_tickers = _normalise_tickers(raw_tickers)
+        if not custom_tickers:
+            raise ValueError(
+                "tickers filter is explicitly empty — nothing to run on. "
+                "Send tickers: null (or omit the field) for the full universe."
+            )
     start = body.get("start") or date_min
     end = body.get("end") or date_max
 
