@@ -1,4 +1,4 @@
-"""Multi-sleeve alpha book — target Sharpe > 1.0 via diversification.
+"""Simple five-sleeve alpha book built from intuitive price-based strategies.
 
 Five sleeves combined via HRP (chosen a priori, no in-sample selection):
 
@@ -6,21 +6,14 @@ Timing sleeves (smooth the beta):
   1. Vol-Managed Equity — target 16% vol, levered to 2x max
   2. Trend-Filtered Equity — hold when > 200-day SMA, T-bills otherwise
 
-Selection sleeves (pick stocks, long-only top quintile + trend filter):
-  3. Cross-Sectional Momentum (6-1 return)
-  4. Low Volatility (bottom quintile by 126-day vol)
-  5. Small Cap Tilt (smallest names by market cap)
+Selection sleeves (long-only top quintile + trend filter):
+  3. Momentum (6-1 return)
+  4. Mean Reversion (distance from 100-day moving average)
+  5. Low Volatility (bottom quintile by 126-day vol)
 
-Each sleeve independently has Sharpe ~0.80-1.10 on this Wharton universe. The
-low correlation between the timing and selection sleeves is where the Sharpe
-lift comes from.
-
-HRP is the fixed combination method — it is robust to covariance estimation
-error and requires no expected-return inputs. Other methods (equal-weight,
-risk-parity, inverse-vol) are reported for comparison but NOT used to select
-the winner, avoiding lookahead bias.
-
-All sleeves are long-only, monthly rebalanced, 10bps round-trip t-cost.
+The goal here is readability: each selection sleeve is a small price-based
+strategy that collaborators can inspect quickly, while the shared backtester
+handles ranking, sizing, lag, and transaction costs.
 """
 from __future__ import annotations
 
@@ -38,17 +31,14 @@ import pandas as pd
 from backtester.research_data import load_wharton_research_dataset
 from backtester.research_backtester import (
     BacktestConfig,
-    build_target_weights,
-    run_weight_backtest,
+    run_strategy_backtest,
 )
 from backtester.tearsheet import generate_tearsheet
 from backtester.stress_test import regime_report, worst_drawdowns
 from backtester.multi_strategy import combine_strategy_returns
 from strategies.research_strategies import (
-    SmallCapTiltStrategy,
-    ValueCompositeStrategy,
-    SectorNeutralDividendYieldStrategy,
-    CrossSectionalMomentumStrategy,
+    MeanReversionStrategy,
+    MomentumStrategy,
     LowVolatilityStrategy,
 )
 
@@ -111,11 +101,10 @@ def inverse_trend_hedge(
 # Selection sleeves — runs a SignalStrategy long-only top quintile
 # ---------------------------------------------------------------------------
 def run_selection_sleeve(strategy, dataset, config: BacktestConfig) -> pd.Series:
-    scores = strategy.generate(dataset).scores
-    weights = build_target_weights(scores, dataset.returns, config)
-    result = run_weight_backtest(
-        prices=dataset.prices, target_weights=weights, config=config,
-        benchmark_returns=dataset.benchmark_returns, strategy_name=strategy.name,
+    result = run_strategy_backtest(
+        dataset=dataset,
+        strategy=strategy,
+        config=config,
     )
     return result.net_returns
 
@@ -161,6 +150,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rf-annual", type=float, default=0.04)
     p.add_argument("--selection-top-pct", type=float, default=0.20)
     p.add_argument("--selection-max-pos", type=float, default=0.08)
+    p.add_argument("--tearsheet", action="store_true")
     return p.parse_args()
 
 
@@ -168,8 +158,6 @@ def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    tearsheet_dir = output_dir / "tearsheets"
-    tearsheet_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading Wharton {args.start} → {args.end}...")
     dataset = load_wharton_research_dataset(
@@ -224,15 +212,12 @@ def main():
           f"MaxDD: {m['Max Drawdown']:.2%}  InMarket: {in_market.mean():.0%}")
 
 
-    # Selection sleeves — each is run through the weight backtester AND then
-    # gets a trend filter applied on top. Keep only the most distinctive
-    # factor signals (value/small-cap/dividend are 94-96% correlated on this
-    # universe, so one representative is enough) plus the orthogonal
-    # low-vol and momentum signals.
+    # Selection sleeves — each is run through the shared weight backtester and
+    # then gets a trend filter applied on top.
     selection_strategies = [
-        CrossSectionalMomentumStrategy(lookback_days=126, skip_days=21),
+        MomentumStrategy(lookback_days=126, skip_days=21),
+        MeanReversionStrategy(window=100),
         LowVolatilityStrategy(window=126),
-        SmallCapTiltStrategy(),
     ]
     for i, strat in enumerate(selection_strategies, start=3):
         label = f"{strat.name} + Trend"
@@ -335,21 +320,24 @@ def main():
     print(f"  Calmar:     {combined_metrics['Calmar Ratio']:.3f}")
     print(f"  MaxDD:      {combined_metrics['Max Drawdown']:.2%}")
 
-    # Tearsheets
-    try:
-        generate_tearsheet(
-            combined, benchmark=benchmark, strategy_name="Combined Book (HRP)",
-            output_path=tearsheet_dir / "Combined_Book.png",
-        )
-        for name, ret in sleeves.items():
-            if name == "Combined Book (HRP)":
-                continue
+    # Tearsheets are opt-in so result folders stay lightweight by default.
+    if args.tearsheet:
+        tearsheet_dir = output_dir / "tearsheets"
+        tearsheet_dir.mkdir(parents=True, exist_ok=True)
+        try:
             generate_tearsheet(
-                ret, benchmark=benchmark, strategy_name=name,
-                output_path=tearsheet_dir / f"{name.replace(' ', '_').replace('-', '_')}.png",
+                combined, benchmark=benchmark, strategy_name="Combined Book (HRP)",
+                output_path=tearsheet_dir / "Combined_Book.png",
             )
-    except Exception as exc:
-        print(f"  tearsheet error: {exc}")
+            for name, ret in sleeves.items():
+                if name == "Combined Book (HRP)":
+                    continue
+                generate_tearsheet(
+                    ret, benchmark=benchmark, strategy_name=name,
+                    output_path=tearsheet_dir / f"{name.replace(' ', '_').replace('-', '_')}.png",
+                )
+        except Exception as exc:
+            print(f"  tearsheet error: {exc}")
 
     # Stress test
     print(f"\n{'='*60}\n  Stress Test — Combined Book\n{'='*60}")
@@ -377,7 +365,7 @@ def main():
     bench_cum = (1 + benchmark.fillna(0)).cumprod() - 1
     ax.plot(bench_cum.index, bench_cum.values, label="Equal-Weight Universe (Benchmark)",
             linewidth=2, linestyle="--", color="black", alpha=0.8)
-    ax.set_title("6-Sleeve Alpha Book — Combined vs Individual",
+    ax.set_title("5-Sleeve Alpha Book — Combined vs Individual",
                  fontsize=14, fontweight="bold")
     ax.set_xlabel("Date"); ax.set_ylabel("Cumulative Return")
     ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
