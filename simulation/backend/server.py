@@ -35,10 +35,10 @@ CONTENT_TYPES = {
 }
 
 
-def _kick_warmup_async() -> None:
+def _kick_warmup_async(source: str = None) -> None:
     def _run() -> None:
         try:
-            simulator.warmup()
+            simulator.warmup(source=source)
         except Exception:
             traceback.print_exc()
 
@@ -130,7 +130,22 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/warmup":
-            _kick_warmup_async()
+            requested_source = body.get("source") if isinstance(body, dict) else None
+            current = simulator.status().get("data_source")
+            # Switching to a different source needs to drop the loaded
+            # dataset so warmup actually reloads. simulator.warmup is a
+            # no-op when ready and the source matches, so we explicitly
+            # invalidate _STATE here when the user picks a different one.
+            if requested_source and requested_source != current:
+                with simulator._LOCK:
+                    simulator._STATE["ready"] = False
+                    simulator._STATE["loading"] = False
+                    simulator._STATE["dataset"] = None
+                    simulator._STATE["benchmark"] = None
+                    simulator._STATE["error"] = None
+                    simulator._STATE["data_source"] = requested_source
+                simulator._SIM_CACHE.clear()
+            _kick_warmup_async(source=requested_source)
             self._send_json(simulator.status())
             return
 
