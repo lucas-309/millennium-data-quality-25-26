@@ -41,6 +41,8 @@ interface Catalog {
   strategies: Strategy[];
   engine_params: ParamSpec[];
   fixed_engine: Record<string, string | number | boolean>;
+  data_source?: string;
+  available_sources?: string[];
 }
 
 interface Metrics {
@@ -136,12 +138,15 @@ interface TickerDetail {
 
 interface StatusResponse {
   ready: boolean;
+  loading?: boolean;
   error?: string;
   tickers?: number;
   date_min?: string;
   date_max?: string;
   message?: string;
   universe_label?: string;
+  data_source?: string;
+  available_sources?: string[];
 }
 
 interface AppState {
@@ -160,6 +165,30 @@ interface AppState {
   // "empty filter = default full cache", which used to get conflated and
   // run the full universe on what should have been an empty result.
   hasCustomFilter: boolean;
+  pinnedRuns: PinnedRun[];
+  dataSource: string;
+  availableSources: string[];
+}
+
+interface SimRequest {
+  strategy_id: string;
+  strategy_params: Record<string, number>;
+  engine_params: Record<string, number>;
+  engine_overrides: Record<string, number>;
+  tickers: string[] | null;
+  start: string;
+  end: string;
+}
+
+interface PinnedRun {
+  id: string;
+  label: string;          // user-editable; auto-generated from strategy + params
+  strategyLabel: string;  // for display in chip subtext
+  colorIdx: number;       // index into series-color rotation
+  dates: string[];
+  cumulativeNet: number[]; // already in percent (× 100), like the live trace
+  payload: SimRequest;     // snapshot of the request that produced this curve
+  metricsNet?: Metrics;
 }
 
 interface RunPayload {
@@ -177,6 +206,20 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
   const $ = <T extends HTMLElement = HTMLElement>(id: string): T =>
     document.getElementById(id) as T;
 
+  const PINNED_STORAGE_KEY = "sim.pinned.v1";
+  const MAX_PINNED = 6;
+  // Series-color rotation for pinned runs. The current run keeps its own
+  // signature color (--q, cinnabar) so the "live" curve always reads the
+  // same; pinned runs cycle through the editorial palette below.
+  const SERIES_VARS = [
+    "--ser-a",
+    "--ser-b",
+    "--ser-c",
+    "--ser-d",
+    "--ser-e",
+    "--ser-f",
+  ];
+
   const state: AppState = {
     catalog: null,
     currentStrategy: null,
@@ -189,23 +232,119 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     fullUniverseSize: 0,
     customTickers: [],
     hasCustomFilter: false,
+    pinnedRuns: loadPinnedFromStorage(),
+    dataSource: "yfinance",
+    availableSources: ["yfinance", "wharton"],
   };
 
-  const plotLayout: Record<string, unknown> = {
-    paper_bgcolor: "#11151c",
-    plot_bgcolor: "#11151c",
-    font: { color: "#e6ecf2", family: "ui-sans-serif, -apple-system, Segoe UI" },
-    margin: { t: 16, r: 16, b: 36, l: 56 },
-    xaxis: { gridcolor: "#1c2330", zerolinecolor: "#1c2330" },
-    yaxis: { gridcolor: "#1c2330", zerolinecolor: "#1c2330" },
-    legend: { orientation: "h", y: -0.18, x: 0 },
-    hovermode: "x unified",
-  };
+  function loadPinnedFromStorage(): PinnedRun[] {
+    try {
+      const raw = localStorage.getItem(PINNED_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as PinnedRun[];
+      if (!Array.isArray(parsed)) return [];
+      // Quick shape guard. Anything malformed is dropped silently.
+      return parsed.filter(
+        (p) =>
+          typeof p === "object" &&
+          p !== null &&
+          typeof p.id === "string" &&
+          Array.isArray(p.dates) &&
+          Array.isArray(p.cumulativeNet),
+      );
+    } catch (_) {
+      return [];
+    }
+  }
+  function savePinnedToStorage(): void {
+    try {
+      localStorage.setItem(
+        PINNED_STORAGE_KEY,
+        JSON.stringify(state.pinnedRuns),
+      );
+    } catch (_) {
+      /* localStorage full / disabled — silently drop persistence */
+    }
+  }
+  function nextFreeColorIdx(): number {
+    const used = new Set(state.pinnedRuns.map((r) => r.colorIdx));
+    for (let i = 0; i < SERIES_VARS.length; i++) {
+      if (!used.has(i)) return i;
+    }
+    // All slots claimed — reuse the oldest position.
+    return state.pinnedRuns.length % SERIES_VARS.length;
+  }
+
+  // Charts read their palette from CSS variables so the theme toggle can
+  // repaint them. Keep this in sync with the :root[data-theme=…] block in
+  // style.css — q is the strategy line, k is the benchmark.
+  const cssVar = (name: string): string =>
+    getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+  function chartPalette(): {
+    bg: string; ink: string; inkSoft: string; muted: string;
+    rule: string; ruleSoft: string;
+    q: string; qGhost: string; k: string; kGhost: string;
+    accent: string; accentTint: string;
+    series: string[];
+  } {
+    return {
+      bg:         cssVar("--bg-tint"),
+      ink:        cssVar("--ink"),
+      inkSoft:    cssVar("--ink-soft"),
+      muted:      cssVar("--muted"),
+      rule:       cssVar("--rule"),
+      ruleSoft:   cssVar("--rule-soft"),
+      q:          cssVar("--q"),
+      qGhost:     cssVar("--q-ghost"),
+      k:          cssVar("--k"),
+      kGhost:     cssVar("--k-ghost"),
+      accent:     cssVar("--accent"),
+      accentTint: cssVar("--accent-tint"),
+      series:     SERIES_VARS.map((v) => cssVar(v)),
+    };
+  }
+
+  function plotLayout(): Record<string, unknown> {
+    const c = chartPalette();
+    return {
+      paper_bgcolor: c.bg,
+      plot_bgcolor: c.bg,
+      font: {
+        color: c.inkSoft,
+        family: "-apple-system, Inter, 'Segoe UI', Roboto, sans-serif",
+        size: 12,
+      },
+      margin: { t: 16, r: 16, b: 36, l: 56 },
+      xaxis: {
+        gridcolor: c.ruleSoft, zerolinecolor: c.rule,
+        linecolor: c.rule, tickcolor: c.rule,
+        tickfont: { color: c.inkSoft },
+      },
+      yaxis: {
+        gridcolor: c.ruleSoft, zerolinecolor: c.rule,
+        linecolor: c.rule, tickcolor: c.rule,
+        tickfont: { color: c.inkSoft },
+      },
+      legend: { orientation: "h", y: -0.2, x: 0, font: { color: c.inkSoft } },
+      hovermode: "x unified",
+      hoverlabel: { bgcolor: c.bg, bordercolor: c.rule, font: { color: c.ink } },
+    };
+  }
   const plotConfig: Record<string, unknown> = {
     displaylogo: false,
     responsive: true,
     modeBarButtonsToRemove: ["lasso2d", "select2d"],
   };
+
+  // Stashed copies of the most recent payloads so the theme toggle can
+  // re-render charts with the new palette without re-fetching, and so
+  // "Pin to overlay" can capture the request that produced the curve.
+  const lastRender: {
+    sim?: SimulationResult;
+    simPayload?: SimRequest;
+    ticker?: TickerDetail;
+  } = {};
 
   const fmtPct = (v: number | null | undefined, d = 2): string =>
     v == null ? "—" : `${(v * 100).toFixed(d)}%`;
@@ -325,6 +464,14 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     } else {
       valWrap.appendChild(numInp);
     }
+    const resetBtn = document.createElement("button");
+    resetBtn.type = "button";
+    resetBtn.className = "param-reset";
+    resetBtn.title = `reset to default ${p.default}`;
+    resetBtn.setAttribute("aria-label", `reset ${p.name} to ${p.default}`);
+    resetBtn.textContent = "↺";
+    valWrap.appendChild(resetBtn);
+
     head.appendChild(lbl);
     head.appendChild(valWrap);
     row.appendChild(head);
@@ -338,8 +485,17 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     slider.value = String(p.default);
     row.appendChild(slider);
 
+    const updateResetState = (): void => {
+      const cur = parseFloat(numInp.value);
+      resetBtn.classList.toggle(
+        "active",
+        Number.isFinite(cur) && cur !== +p.default,
+      );
+    };
+
     const syncFromSlider = (): void => {
       numInp.value = slider.value;
+      updateResetState();
       renderLiveCode();
       scheduleRun();
     };
@@ -349,6 +505,7 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       const v = parseFloat(numInp.value);
       if (!Number.isFinite(v)) return;
       slider.value = String(v);
+      updateResetState();
       renderLiveCode();
       scheduleRun();
     };
@@ -365,9 +522,18 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       if (v > +p.max) v = +p.max;
       numInp.value = String(v);
       slider.value = String(v);
+      updateResetState();
       renderLiveCode();
       scheduleRun();
     });
+    resetBtn.addEventListener("click", () => {
+      numInp.value = String(p.default);
+      slider.value = String(p.default);
+      updateResetState();
+      renderLiveCode();
+      scheduleRun();
+    });
+    updateResetState();
 
     if (p.help) {
       const help = document.createElement("p");
@@ -494,6 +660,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
   let runTimer: number | null = null;
   function scheduleRun(): void {
     if (runTimer !== null) clearTimeout(runTimer);
+    setProgress(20);
     runTimer = window.setTimeout(run, 350);
   }
   ($("start") as HTMLInputElement).addEventListener("change", () => {
@@ -511,6 +678,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       return;
     }
     state.running = true;
+    setProgress(60);
     setStatus("running simulation…", "loading");
     try {
       const p = readParams();
@@ -542,6 +710,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       }
       const data = (await res.json()) as SimulationResult;
       const elapsed = performance.now() - t0;
+      lastRender.simPayload = body;
       renderResults(data);
       setStatus(`ready · last run ${(elapsed / 1000).toFixed(2)}s`, "ready");
     } catch (exc) {
@@ -551,6 +720,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       setStatus(`error: ${msg}`, "error");
     } finally {
       state.running = false;
+      progressDone();
       if (state.pending) {
         state.pending = false;
         scheduleRun();
@@ -602,41 +772,256 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       `turnover ${fmtX(o.turnover_annualized, 1)}/yr`,
     );
 
+    lastRender.sim = data;
+    const eqPal = chartPalette();
+    const eqLayout = plotLayout();
+    const liveLabel = state.currentStrategy
+      ? autoRunLabel(state.currentStrategy, lastRender.simPayload)
+      : "Strategy";
+    const traces: Record<string, unknown>[] = [
+      {
+        x: data.dates,
+        y: data.cumulative_benchmark.map((v) => v * 100),
+        name: "Equal-weight universe",
+        type: "scatter",
+        mode: "lines",
+        line: { color: eqPal.k, width: 1.5, dash: "dot" },
+        hovertemplate: "%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>Benchmark</extra>",
+      },
+    ];
+    for (const pinned of state.pinnedRuns) {
+      const color = eqPal.series[pinned.colorIdx % eqPal.series.length];
+      traces.push({
+        x: pinned.dates,
+        y: pinned.cumulativeNet,
+        name: pinned.label,
+        type: "scatter",
+        mode: "lines",
+        line: { color, width: 1.6 },
+        opacity: 0.85,
+        hovertemplate: `%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>${escapeHtml(pinned.label)}</extra>`,
+      });
+    }
+    traces.push({
+      x: data.dates,
+      y: data.cumulative_net.map((v) => v * 100),
+      name: `${liveLabel} · live`,
+      type: "scatter",
+      mode: "lines",
+      line: { color: eqPal.q, width: 2.2 },
+      hovertemplate: `%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>${escapeHtml(liveLabel)}</extra>`,
+    });
     Plotly.react(
       "chart-equity",
-      [
-        {
-          x: data.dates,
-          y: data.cumulative_benchmark.map((v) => v * 100),
-          name: "Equal-weight universe",
-          type: "scatter",
-          mode: "lines",
-          line: { color: "#7a8a9c", width: 1.5, dash: "dot" },
-        },
-        {
-          x: data.dates,
-          y: data.cumulative_net.map((v) => v * 100),
-          name: "Strategy (net of t-cost)",
-          type: "scatter",
-          mode: "lines",
-          line: { color: "#58c1ff", width: 2.3 },
-        },
-      ],
+      traces,
       {
-        ...plotLayout,
+        ...eqLayout,
         yaxis: {
-          ...(plotLayout.yaxis as Record<string, unknown>),
+          ...(eqLayout.yaxis as Record<string, unknown>),
           title: "Cumulative return (%)",
           tickformat: ",.0f",
+          ticksuffix: "%",
+          automargin: true,
+        },
+        xaxis: {
+          ...(eqLayout.xaxis as Record<string, unknown>),
+          automargin: true,
         },
       },
       plotConfig,
     );
 
     renderAudit(data.survivorship_audit || {});
+    renderPinnedList();
     if (data.universe && typeof data.universe.n_tickers === "number") {
       state.universeSize = data.universe.n_tickers;
       updateSizing();
+    }
+  }
+
+  // ---------- Pinned-run overlay ----------
+  function autoRunLabel(strategy: Strategy, payload?: SimRequest): string {
+    if (!payload) return strategy.label;
+    const sp = payload.strategy_params || {};
+    const eo = payload.engine_overrides || {};
+    const bits: string[] = [];
+    for (const p of strategy.params) {
+      const v = sp[p.name];
+      if (v == null) continue;
+      bits.push(`${shortName(p.name)}=${pyRepr(v)}`);
+    }
+    for (const p of strategy.engine_overrides || []) {
+      const v = eo[p.name];
+      if (v == null) continue;
+      bits.push(`${shortName(p.name)}=${pyRepr(v)}`);
+    }
+    return bits.length ? `${strategy.label} · ${bits.join(", ")}` : strategy.label;
+  }
+  function shortName(name: string): string {
+    // Compact param names for chip labels: "lookback_days" → "lb",
+    // "skip_days" → "skip", etc.
+    if (name === "lookback_days") return "lb";
+    if (name === "skip_days") return "skip";
+    if (name === "transaction_cost_bps") return "tc";
+    if (name === "long_quantile") return "lq";
+    if (name === "short_quantile") return "sq";
+    if (name === "signal_lag") return "lag";
+    return name;
+  }
+  function payloadFingerprint(p: SimRequest): string {
+    const tickerHash = p.tickers ? `[${p.tickers.length}]` : "all";
+    return [
+      p.strategy_id,
+      JSON.stringify(p.strategy_params),
+      JSON.stringify(p.engine_params),
+      JSON.stringify(p.engine_overrides),
+      p.start,
+      p.end,
+      tickerHash,
+    ].join("|");
+  }
+  function pinCurrentRun(): void {
+    if (!lastRender.sim || !lastRender.simPayload || !state.currentStrategy) {
+      toast("nothing to pin yet — run a backtest first", true);
+      return;
+    }
+    if (state.pinnedRuns.length >= MAX_PINNED) {
+      toast(`overlay holds at most ${MAX_PINNED} runs — remove one first`, true);
+      return;
+    }
+    const fp = payloadFingerprint(lastRender.simPayload);
+    const dupe = state.pinnedRuns.some(
+      (r) => payloadFingerprint(r.payload) === fp,
+    );
+    if (dupe) {
+      toast("this run is already pinned", false, 2500);
+      return;
+    }
+    const colorIdx = nextFreeColorIdx();
+    const pinned: PinnedRun = {
+      id:
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      label: autoRunLabel(state.currentStrategy, lastRender.simPayload),
+      strategyLabel: state.currentStrategy.label,
+      colorIdx,
+      dates: lastRender.sim.dates.slice(),
+      cumulativeNet: lastRender.sim.cumulative_net.map((v) => v * 100),
+      payload: JSON.parse(JSON.stringify(lastRender.simPayload)) as SimRequest,
+      metricsNet: lastRender.sim.metrics_net,
+    };
+    state.pinnedRuns.push(pinned);
+    savePinnedToStorage();
+    if (lastRender.sim) renderResults(lastRender.sim);
+    else renderPinnedList();
+  }
+  function removePinnedRun(id: string): void {
+    const before = state.pinnedRuns.length;
+    state.pinnedRuns = state.pinnedRuns.filter((r) => r.id !== id);
+    if (state.pinnedRuns.length === before) return;
+    savePinnedToStorage();
+    if (lastRender.sim) renderResults(lastRender.sim);
+    else renderPinnedList();
+  }
+  function clearAllPinnedRuns(): void {
+    if (!state.pinnedRuns.length) return;
+    state.pinnedRuns = [];
+    savePinnedToStorage();
+    if (lastRender.sim) renderResults(lastRender.sim);
+    else renderPinnedList();
+  }
+  function restorePinnedConfig(id: string): void {
+    const pinned = state.pinnedRuns.find((r) => r.id === id);
+    if (!pinned) return;
+    if (!state.catalog) return;
+    const strat = state.catalog.strategies.find(
+      (s) => s.id === pinned.payload.strategy_id,
+    );
+    if (!strat) {
+      toast(`strategy ${pinned.payload.strategy_id} not in catalog`, true);
+      return;
+    }
+    // Switch to the right strategy first, then push the pinned values
+    // into the input controls. selectStrategy already calls scheduleRun;
+    // we delay our writes until *after* the new param rows mount.
+    selectStrategy(strat.id);
+    requestAnimationFrame(() => {
+      const writeInput = (id: string, v: number): void => {
+        const el = document.getElementById(id) as HTMLInputElement | null;
+        if (!el) return;
+        el.value = String(v);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      };
+      for (const [k, v] of Object.entries(pinned.payload.strategy_params)) {
+        writeInput(`strat-${k}`, v);
+      }
+      for (const [k, v] of Object.entries(pinned.payload.engine_params)) {
+        writeInput(`eng-${k}`, v);
+      }
+      for (const [k, v] of Object.entries(pinned.payload.engine_overrides)) {
+        writeInput(`ovr-${k}`, v);
+      }
+      const startEl = document.getElementById("start") as HTMLInputElement | null;
+      const endEl = document.getElementById("end") as HTMLInputElement | null;
+      if (startEl) startEl.value = pinned.payload.start;
+      if (endEl) endEl.value = pinned.payload.end;
+      renderLiveCode();
+      scheduleRun();
+    });
+  }
+  function renderPinnedList(): void {
+    const host = document.getElementById("pinned-list");
+    const empty = document.getElementById("pinned-empty");
+    const clearBtn = document.getElementById("pinned-clear") as HTMLButtonElement | null;
+    if (!host) return;
+    host.innerHTML = "";
+    const pal = chartPalette();
+    if (!state.pinnedRuns.length) {
+      if (empty) (empty as HTMLElement).hidden = false;
+      if (clearBtn) clearBtn.disabled = true;
+      return;
+    }
+    if (empty) (empty as HTMLElement).hidden = true;
+    if (clearBtn) clearBtn.disabled = false;
+    for (const pinned of state.pinnedRuns) {
+      const color = pal.series[pinned.colorIdx % pal.series.length];
+      const sharpe = pinned.metricsNet?.sharpe;
+      const ret = pinned.metricsNet?.annualized_return;
+      const chip = document.createElement("div");
+      chip.className = "pinned-chip";
+      chip.innerHTML = `
+        <span class="pinned-swatch" style="background: ${color}"></span>
+        <div class="pinned-body">
+          <div class="pinned-label" title="click to rename">${escapeHtml(pinned.label)}</div>
+          <div class="pinned-meta">
+            ${sharpe != null ? `Sharpe ${sharpe.toFixed(2)}` : ""}
+            ${ret != null ? ` · ann ${(ret * 100).toFixed(1)}%` : ""}
+            ${pinned.payload.start} → ${pinned.payload.end}
+          </div>
+        </div>
+        <button type="button" class="pinned-restore" title="reload these params into the controls" aria-label="reload params">↺</button>
+        <button type="button" class="pinned-remove" title="remove from overlay" aria-label="remove">×</button>
+      `;
+      const labelEl = chip.querySelector(".pinned-label") as HTMLDivElement;
+      labelEl.addEventListener("click", () => {
+        const next = window.prompt("Rename pinned run:", pinned.label);
+        if (next != null && next.trim() && next.trim() !== pinned.label) {
+          pinned.label = next.trim();
+          savePinnedToStorage();
+          if (lastRender.sim) renderResults(lastRender.sim);
+          else renderPinnedList();
+        }
+      });
+      (chip.querySelector(".pinned-restore") as HTMLButtonElement).addEventListener(
+        "click",
+        () => restorePinnedConfig(pinned.id),
+      );
+      (chip.querySelector(".pinned-remove") as HTMLButtonElement).addEventListener(
+        "click",
+        () => removePinnedRun(pinned.id),
+      );
+      host.appendChild(chip);
     }
   }
 
@@ -672,6 +1057,8 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     noteEl.textContent = a.structural_bias_note || "";
 
     const ts: AuditTimeseries = a.active_timeseries || { dates: [], counts: [] };
+    const auPal = chartPalette();
+    const auLayout = plotLayout();
     Plotly.react(
       "chart-audit",
       [
@@ -681,20 +1068,26 @@ result  = run_weight_backtest(dataset.prices, weights, config,
           type: "scatter",
           mode: "lines",
           name: "Active tickers",
-          line: { color: "#58c1ff", width: 1.8 },
+          line: { color: auPal.accent, width: 1.6 },
           fill: "tozeroy",
-          fillcolor: "rgba(88,193,255,0.08)",
+          fillcolor: auPal.accentTint,
         },
       ],
       {
-        ...plotLayout,
-        margin: { t: 10, r: 10, b: 30, l: 48 },
+        ...auLayout,
+        margin: { t: 10, r: 10, b: 30, l: 12 },
         height: 220,
         showlegend: false,
         yaxis: {
-          ...(plotLayout.yaxis as Record<string, unknown>),
+          ...(auLayout.yaxis as Record<string, unknown>),
           title: "Active tickers",
           rangemode: "tozero",
+          automargin: true,
+          nticks: 4,
+        },
+        xaxis: {
+          ...(auLayout.xaxis as Record<string, unknown>),
+          automargin: true,
         },
       },
       plotConfig,
@@ -768,6 +1161,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     }
   }
   function renderTickerDetail(d: TickerDetail): void {
+    lastRender.ticker = d;
     const right = $("data-right");
     const metaBits = Object.entries(d.metadata)
       .map(([k, v]) => `${k}=${v}`)
@@ -788,6 +1182,38 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       </div>
       <div id="detail-chart" class="detail-chart"></div>
     `;
+    const tdPal = chartPalette();
+    const tdLayout = plotLayout();
+    // Pick log vs linear from the price range. Forcing log on a narrow
+    // window (e.g. $80–$120) packs ticks onto a half-decade and they
+    // collide; forcing linear on a 30-year split-adjusted series wastes
+    // most of the y-axis on the early decades.
+    const finitePrices = d.prices.filter(
+      (p) => Number.isFinite(p) && p > 0,
+    ) as number[];
+    const minP = finitePrices.length ? Math.min(...finitePrices) : 1;
+    const maxP = finitePrices.length ? Math.max(...finitePrices) : 1;
+    const ratio = minP > 0 ? maxP / minP : 1;
+    const useLog = ratio >= 3;
+    const baseYAxis = tdLayout.yaxis as Record<string, unknown>;
+    const yaxis = useLog
+      ? {
+          ...baseYAxis,
+          title: "Price (log)",
+          type: "log",
+          tickformat: "$,.2~f",
+          dtick: "D2",
+          automargin: true,
+          tickfont: { size: 11, color: tdPal.inkSoft },
+        }
+      : {
+          ...baseYAxis,
+          title: "Price",
+          tickformat: "$,.2~f",
+          nticks: 5,
+          automargin: true,
+          tickfont: { size: 11, color: tdPal.inkSoft },
+        };
     Plotly.react(
       "detail-chart",
       [
@@ -796,19 +1222,19 @@ result  = run_weight_backtest(dataset.prices, weights, config,
           y: d.prices,
           type: "scatter",
           mode: "lines",
-          line: { color: "#58c1ff", width: 1.6 },
+          line: { color: tdPal.ink, width: 1.4 },
           hovertemplate: "%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
         },
       ],
       {
-        ...plotLayout,
-        margin: { t: 8, r: 8, b: 28, l: 48 },
-        yaxis: {
-          ...(plotLayout.yaxis as Record<string, unknown>),
-          title: "Price",
-          type: "log",
-          tickformat: ".2f",
-          dtick: "D2",
+        ...tdLayout,
+        // Let automargin claim the left margin so long $-formatted
+        // labels (e.g. "$1,234.56") never get clipped.
+        margin: { t: 8, r: 12, b: 32, l: 12 },
+        yaxis,
+        xaxis: {
+          ...(tdLayout.xaxis as Record<string, unknown>),
+          automargin: true,
         },
         showlegend: false,
       },
@@ -912,6 +1338,53 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     });
   }
 
+  // ---------- Pin / overlay controls ----------
+  const pinBtn = document.getElementById("pin-current");
+  if (pinBtn) pinBtn.addEventListener("click", () => pinCurrentRun());
+  const clearAllBtn = document.getElementById("pinned-clear");
+  if (clearAllBtn) clearAllBtn.addEventListener("click", () => clearAllPinnedRuns());
+
+  // ---------- Theme toggle ----------
+  type Theme = "light" | "dark";
+  function applyTheme(t: Theme): void {
+    document.documentElement.setAttribute("data-theme", t);
+    try { localStorage.setItem("sim-theme", t); } catch (_) { /* ignore */ }
+    // Repaint any charts that already have data so their backgrounds and
+    // line colors track the new palette.
+    if (lastRender.sim) renderResults(lastRender.sim);
+    if (lastRender.ticker) renderTickerDetail(lastRender.ticker);
+  }
+  const themeBtn = document.getElementById("theme-toggle");
+  if (themeBtn) {
+    themeBtn.addEventListener("click", () => {
+      const cur = (document.documentElement.getAttribute("data-theme") as Theme) || "light";
+      applyTheme(cur === "light" ? "dark" : "light");
+    });
+  }
+
+  // ---------- Progress bar ----------
+  let progressResetTimer: number | null = null;
+  function setProgress(pct: number, idle = false): void {
+    const el = document.getElementById("progress");
+    if (!el) return;
+    // A non-idle update means a new run is starting — cancel any pending
+    // reset from a previous run so it can't clobber us back to 0.
+    if (!idle && progressResetTimer !== null) {
+      clearTimeout(progressResetTimer);
+      progressResetTimer = null;
+    }
+    el.style.setProperty("--p", `${pct}%`);
+    el.classList.toggle("idle", idle);
+  }
+  function progressDone(): void {
+    setProgress(100);
+    if (progressResetTimer !== null) clearTimeout(progressResetTimer);
+    progressResetTimer = window.setTimeout(() => {
+      progressResetTimer = null;
+      setProgress(0, true);
+    }, 320);
+  }
+
   // ---------- Boot ----------
   async function waitReady(): Promise<boolean> {
     while (true) {
@@ -922,6 +1395,8 @@ result  = run_weight_backtest(dataset.prices, weights, config,
           setStatus(`error: ${s.error}`, "error");
           return false;
         }
+        if (s.data_source) state.dataSource = s.data_source;
+        if (s.available_sources) state.availableSources = s.available_sources;
         if (s.ready) {
           setStatus(`ready · ${s.tickers} tickers · ${s.date_min} → ${s.date_max}`, "ready");
           const startEl = $("start") as HTMLInputElement;
@@ -935,6 +1410,8 @@ result  = run_weight_backtest(dataset.prices, weights, config,
           state.universeSize = s.tickers || 0;
           state.fullUniverseSize = s.tickers || 0;
           refreshUniverseStatus();
+          updateSourceSelector();
+          updateUniverseEditorMode();
           return true;
         }
         setStatus(`loading · ${s.message}`, "loading");
@@ -946,8 +1423,107 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     }
   }
 
+  // ---------- Data source selector ----------
+  function sourceLabel(src: string): string {
+    if (src === "wharton") return "Wharton WRDS · ~865 tickers";
+    return "yfinance · S&P 500";
+  }
+  function updateSourceSelector(): void {
+    const sel = document.getElementById("source-select") as HTMLSelectElement | null;
+    if (!sel) return;
+    // Rebuild the option list to match the backend's reported sources;
+    // mark the active one as selected.
+    const sources = state.availableSources.length
+      ? state.availableSources
+      : ["yfinance", "wharton"];
+    sel.innerHTML = "";
+    for (const s of sources) {
+      const opt = document.createElement("option");
+      opt.value = s;
+      opt.textContent = sourceLabel(s);
+      if (s === state.dataSource) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+  function updateUniverseEditorMode(): void {
+    const note = document.getElementById("universe-source-note");
+    const fetchBtn = document.getElementById("universe-fetch") as HTMLButtonElement | null;
+    const wharton = state.dataSource === "wharton";
+    if (note) {
+      (note as HTMLElement).hidden = !wharton;
+    }
+    if (fetchBtn) {
+      // The "Exclude" button doesn't actually fetch — it operates on what's
+      // already in cache, which works for Wharton. So leave it enabled.
+      fetchBtn.disabled = false;
+    }
+  }
+  async function switchDataSource(target: string): Promise<void> {
+    if (target === state.dataSource) return;
+    state.dataSource = target;
+    setStatus(`switching to ${sourceLabel(target)}…`, "loading");
+    setProgress(15);
+    try {
+      const res = await fetch("/api/warmup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: target }),
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      // Clear pinned runs — their tickers / dates may not exist in the
+      // new universe, and the chart palette is shared. Toast so the user
+      // knows why their overlay just emptied.
+      if (state.pinnedRuns.length) {
+        const n = state.pinnedRuns.length;
+        state.pinnedRuns = [];
+        savePinnedToStorage();
+        renderPinnedList();
+        toast(`cleared ${n} pinned run${n === 1 ? "" : "s"} — new data source`, false, 4000);
+      }
+      // Now wait for the backend to finish reloading. Reuse waitReady's
+      // polling logic so the rest of the boot flow stays consistent.
+      const ok = await waitReady();
+      if (!ok) return;
+      state.catalog = await loadCatalog();
+      const stillSelectable = state.currentStrategy
+        ? state.catalog.strategies.find((s) => s.id === state.currentStrategy!.id)
+        : null;
+      if (!stillSelectable) {
+        renderStrategyTabs();
+        selectStrategy(state.catalog.strategies[0].id);
+      } else {
+        // Strategy still exists — just refresh the live code in case the
+        // catalog reflowed.
+        renderLiveCode();
+        scheduleRun();
+      }
+      // Re-fetch the data overview so the inspector reflects the new universe.
+      state.dataOverview = null;
+      state.selectedTicker = null;
+      const right = document.getElementById("data-right");
+      if (right) right.innerHTML = `<div class="data-empty">Pick a ticker to preview its price history.</div>`;
+      loadDataOverview().catch((e) => console.error(e));
+    } catch (exc) {
+      const msg = exc instanceof Error ? exc.message : String(exc);
+      toast(`source switch failed: ${msg}`, true, 6000);
+      setStatus(`error: ${msg}`, "error");
+    } finally {
+      progressDone();
+    }
+  }
+  const sourceSel = document.getElementById("source-select") as HTMLSelectElement | null;
+  if (sourceSel) {
+    sourceSel.addEventListener("change", () => {
+      const v = sourceSel.value;
+      if (v) switchDataSource(v);
+    });
+  }
+
   (async (): Promise<void> => {
     setStatus("connecting…", "loading");
+    renderPinnedList();
     if (!(await waitReady())) return;
     state.catalog = await loadCatalog();
     renderStrategyTabs();
