@@ -27,3 +27,19 @@ test_wharton.py
 run_*.py
 main.py
 research_main.py
+
+# Older Wharton parquets — only WhartonDataSource4.parquet is used by the
+# simulator; the rest are historical snapshots that bloat the image by ~123MB.
+backtester/WhartonDataSource.parquet
+backtester/WhartonDataSource2.parquet
+backtester/WhartonDataSource3.parquet
+
+# Sample / development caches not needed in production
+backtester/cache/
+
+# Docs and ad-hoc reports the backend never reads
+backtester/*.md
+backtester/*.txt
+backtester/*.csv
+backtester/wharton_alias_report_summary.txt
+backtester/spy_wharton4_verification_report.txt

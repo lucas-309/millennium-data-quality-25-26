@@ -1194,7 +1194,13 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     const minP = finitePrices.length ? Math.min(...finitePrices) : 1;
     const maxP = finitePrices.length ? Math.max(...finitePrices) : 1;
     const ratio = minP > 0 ? maxP / minP : 1;
-    const useLog = ratio >= 3;
+    // Only switch to log when the range is genuinely wide (>10×). For
+    // anything narrower the linear axis with a small nticks reads cleaner;
+    // forcing log on a 2–3× range packs ticks onto a half-decade and they
+    // collide. We also avoid Plotly's `dtick: "D2"` (1/2/5 per decade)
+    // because at our chart heights it lays down 6–7 labels even in the
+    // log case — `nticks` lets Plotly pick a sane subset.
+    const useLog = ratio >= 10;
     const baseYAxis = tdLayout.yaxis as Record<string, unknown>;
     const yaxis = useLog
       ? {
@@ -1202,7 +1208,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
           title: "Price (log)",
           type: "log",
           tickformat: "$,.2~f",
-          dtick: "D2",
+          nticks: 5,
           automargin: true,
           tickfont: { size: 11, color: tdPal.inkSoft },
         }
