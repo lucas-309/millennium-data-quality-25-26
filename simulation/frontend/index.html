@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -14,7 +14,7 @@
   <div id="progress" class="progress idle"></div>
 
   <header class="topbar">
-    <div class="brand">SIM<em>·</em>BACKTESTER</div>
+    <div class="brand">Strategy <em>Simulator</em></div>
     <nav class="strategy-tabs" id="strategy-tabs"></nav>
     <div class="horizon">
       <input id="start" type="date" value="2005-01-01" />
@@ -27,7 +27,6 @@
         <option value="wharton">Wharton WRDS · ~865</option>
       </select>
     </div>
-    <button id="theme-toggle" class="theme-toggle" type="button" aria-hidden="true" tabindex="-1"></button>
   </header>
 
   <main class="layout">
@@ -51,10 +50,10 @@
           <div class="universe-box">
             <div class="universe-head">
               <label for="universe-input">Universe</label>
-              <span class="universe-status" id="universe-status">all cached</span>
+              <span class="universe-status" id="universe-status">all cached (503)</span>
             </div>
             <textarea id="universe-input"
-              placeholder="blank = full universe · or AAPL, MSFT, NVDA, JPM"
+              placeholder="leave blank for full S&P 500, or paste e.g. AAPL, MSFT, NVDA, JPM"
               rows="2"></textarea>
             <div class="universe-actions">
               <button id="universe-apply" type="button">Apply</button>
@@ -62,8 +61,8 @@
               <button id="universe-reset" type="button" title="clear override and use full cache">Reset</button>
             </div>
             <p class="universe-help">
-              <em>Apply</em> restricts the run to the names you list.
-              <em>Exclude</em> runs on everything else in the cache.
+              Enter tickers comma- or newline-separated. Use <em>Apply</em> to restrict the run
+              to just those names; use <em>Exclude</em> to run on everything except those names.
               Tickers not in the cache are ignored.
             </p>
             <p id="universe-source-note" class="universe-source-note" hidden>
