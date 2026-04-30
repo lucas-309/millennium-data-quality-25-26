@@ -17,4 +17,3 @@ data_cache/
 sp500_universe.pkl
 .claude/
 data_quality_materials/
-/venv

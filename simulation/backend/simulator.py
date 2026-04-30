@@ -24,11 +24,19 @@ import numpy as np
 import pandas as pd
 
 from backtester import research_backtester as rbt
-from backtester.research_data import ResearchDataset
+from backtester.research_data import ResearchDataset, load_wharton_research_dataset
 from backtester.sp500_universe import load_sp500_universe
 from backtester.yfinance_cache import list_cached_tickers
 from backtester.yfinance_loader import load_yfinance_research_dataset
 from strategies import research_strategies as rs
+
+# Two data sources are supported:
+#   - "yfinance": today's S&P 500 (~503 tickers), live cache via run_sp500_fetch.py
+#   - "wharton" : the WhartonDataSource4.parquet panel (~865 unique tickers across
+#                 all-time SP membership; static file committed to the repo)
+DEFAULT_SOURCE = "yfinance"
+SUPPORTED_SOURCES = ("yfinance", "wharton")
+WHARTON_PARQUET = Path(__file__).resolve().parent.parent.parent / "backtester" / "WhartonDataSource4.parquet"
 
 _LOCK = threading.Lock()
 _STATE: Dict[str, Any] = {
@@ -36,6 +44,7 @@ _STATE: Dict[str, Any] = {
     "dataset": None, "benchmark": None,
     "date_min": None, "date_max": None, "tickers": 0,
     "universe_label": None,
+    "data_source": DEFAULT_SOURCE,
 }
 _SIM_CACHE: Dict[str, Dict[str, Any]] = {}
 
@@ -138,30 +147,96 @@ FIXED_ENGINE = {
 
 
 # ---------------------------------------------------------------------------
-# Warmup — load the yfinance S&P 500 cache into a ResearchDataset
+# Warmup — load the chosen data source into a ResearchDataset
 # ---------------------------------------------------------------------------
-def warmup(start: str = "2005-01-01", end: str = None) -> None:
+def _normalize_wharton_columns(panel):
+    """Wharton/Compustat tickers use dot notation (BRK.B, BF.B); the rest of
+    the simulator (and the frontend) speaks dash notation (BRK-B). Rename
+    columns at load time so downstream code can stay source-agnostic."""
+    if panel is None or not hasattr(panel, "columns"):
+        return panel
+    rename = {c: c.replace(".", "-") for c in panel.columns if isinstance(c, str)}
+    if rename:
+        panel = panel.rename(columns=rename)
+    return panel
+
+
+def _load_wharton_dataset(start: str, end: str) -> ResearchDataset:
+    if not WHARTON_PARQUET.exists():
+        raise RuntimeError(
+            f"Wharton parquet not found at {WHARTON_PARQUET}. "
+            "Switch back to the yfinance source or restore the file."
+        )
+    dataset = load_wharton_research_dataset(
+        file_path=str(WHARTON_PARQUET),
+        start_date=start,
+        end_date=end,
+        tickers=None,                # load full universe in the parquet
+        use_total_return=True,
+        min_history=21,
+    )
+    # Rename ticker columns to the dash convention used everywhere else.
+    return ResearchDataset(
+        prices=_normalize_wharton_columns(dataset.prices),
+        returns=_normalize_wharton_columns(dataset.returns),
+        benchmark_returns=dataset.benchmark_returns,
+        volumes=_normalize_wharton_columns(dataset.volumes),
+        dividends=_normalize_wharton_columns(dataset.dividends),
+        eps=_normalize_wharton_columns(dataset.eps),
+        market_caps=_normalize_wharton_columns(dataset.market_caps),
+        metadata=(
+            dataset.metadata.rename(
+                index={i: i.replace(".", "-") for i in dataset.metadata.index if isinstance(i, str)}
+            )
+            if dataset.metadata is not None
+            else None
+        ),
+        events=dataset.events,
+    )
+
+
+def warmup(start: str = "2005-01-01", end: str = None, source: str = None) -> None:
     if end is None:
         end = date.today().strftime("%Y-%m-%d")
+    if source is None:
+        source = _STATE.get("data_source") or DEFAULT_SOURCE
+    if source not in SUPPORTED_SOURCES:
+        raise ValueError(f"unknown data source: {source!r}")
     with _LOCK:
-        if _STATE["loading"] or _STATE["ready"]:
+        if _STATE["loading"]:
+            return
+        # If the requested source matches the already-loaded one, nothing to do.
+        if _STATE["ready"] and _STATE.get("data_source") == source:
             return
         _STATE["loading"] = True
-        _STATE["message"] = "loading S&P 500 yfinance cache"
+        _STATE["ready"] = False
+        _STATE["data_source"] = source
+        _STATE["message"] = f"loading {source} dataset"
         _STATE["error"] = None
     try:
-        cached = list_cached_tickers()
-        if not cached:
-            raise RuntimeError(
-                "yfinance cache is empty — run `python run_sp500_fetch.py` first"
+        if source == "yfinance":
+            cached = list_cached_tickers()
+            if not cached:
+                raise RuntimeError(
+                    "yfinance cache is empty — run `python run_sp500_fetch.py` first"
+                )
+            snap = load_sp500_universe()
+            dataset = load_yfinance_research_dataset(
+                start_date=start, end_date=end,
+                tickers=cached,
+                min_history=21,
+                sp500_frame=snap.frame,
             )
-        snap = load_sp500_universe()
-        dataset = load_yfinance_research_dataset(
-            start_date=start, end_date=end,
-            tickers=cached,
-            min_history=21,  # let recent SP500 joiners in; strategies skip NaN-score days
-            sp500_frame=snap.frame,
-        )
+            label = f"S&P 500 yfinance ({len(dataset.tickers)} tickers)"
+        elif source == "wharton":
+            dataset = _load_wharton_dataset(start=start, end=end)
+            label = f"Wharton WRDS panel ({len(dataset.tickers)} tickers)"
+        else:  # pragma: no cover — guarded above
+            raise ValueError(f"unknown data source: {source!r}")
+
+        # Switching sources invalidates the per-run cache (different prices,
+        # different universe → identical request would otherwise stale-hit).
+        _SIM_CACHE.clear()
         with _LOCK:
             _STATE.update({
                 "ready": True, "loading": False, "message": "ready",
@@ -169,7 +244,8 @@ def warmup(start: str = "2005-01-01", end: str = None) -> None:
                 "date_min": str(dataset.prices.index.min().date()),
                 "date_max": str(dataset.prices.index.max().date()),
                 "tickers": len(dataset.tickers),
-                "universe_label": f"S&P 500 yfinance ({len(dataset.tickers)} tickers)",
+                "universe_label": label,
+                "data_source": source,
             })
     except Exception as exc:
         with _LOCK:
@@ -187,6 +263,8 @@ def status() -> Dict[str, Any]:
             "date_min": _STATE["date_min"], "date_max": _STATE["date_max"],
             "tickers": _STATE["tickers"],
             "universe_label": _STATE["universe_label"],
+            "data_source": _STATE.get("data_source", DEFAULT_SOURCE),
+            "available_sources": list(SUPPORTED_SOURCES),
         }
 
 
@@ -211,6 +289,8 @@ def catalog() -> Dict[str, Any]:
         "strategies": strategies,
         "engine_params": ENGINE_PARAMS,
         "fixed_engine": FIXED_ENGINE,
+        "data_source": _STATE.get("data_source", DEFAULT_SOURCE),
+        "available_sources": list(SUPPORTED_SOURCES),
     }
 
 
@@ -267,6 +347,12 @@ def add_tickers_to_universe(tickers: List[str]) -> Dict[str, Any]:
     in-memory dataset so the new names are immediately usable by the
     simulator.
     """
+    if _STATE.get("data_source") == "wharton":
+        raise RuntimeError(
+            "Wharton dataset is static — no live fetch. Switch the data "
+            "source to yfinance to add new tickers, or pick a subset of "
+            "the existing Wharton universe via Apply/Exclude."
+        )
     from backtester.yfinance_cache import fetch_tickers, list_cached_tickers
 
     wanted = _normalise_tickers(tickers)
@@ -382,11 +468,15 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
             )
         universe_note = {"selected": selected_tickers, "missing": missing}
         # Scale min_names for small custom universes so the strategy actually
-        # forms portfolios instead of skipping every rebalance.
-        cfg_kwargs["min_names"] = min(cfg_kwargs.get("min_names", 10), max(2, len(selected_tickers) // 4))
+        # forms portfolios instead of skipping every rebalance. Floor drops
+        # to 1 for a single-ticker universe — otherwise the default floor of
+        # 2 blocks every rebalance and the sim returns a flat zero curve.
+        n_sel = len(selected_tickers)
+        floor = 1 if n_sel <= 1 else 2
+        cfg_kwargs["min_names"] = min(cfg_kwargs.get("min_names", 10), max(floor, n_sel // 4))
         # Also cap max_position_weight so the per-leg budget can fit even when
         # only a handful of names qualify.
-        n_long = max(1, int(len(selected_tickers) * float(cfg_kwargs["long_quantile"])))
+        n_long = max(1, int(n_sel * float(cfg_kwargs["long_quantile"])))
         cfg_kwargs["max_position_weight"] = max(cfg_kwargs.get("max_position_weight", 0.08), 1.0 / n_long)
 
     config = rbt.BacktestConfig(**cfg_kwargs)
@@ -512,8 +602,13 @@ def data_overview() -> Dict[str, Any]:
             row["sector"] = ""
         rows.append(row)
 
+    src = _STATE.get("data_source", DEFAULT_SOURCE)
+    if src == "wharton":
+        source_file = "backtester/WhartonDataSource4.parquet (Wharton WRDS)"
+    else:
+        source_file = "data_cache/yfinance/*.pkl (current S&P 500)"
     return {
-        "source_file": "data_cache/yfinance/*.pkl (current S&P 500)",
+        "source_file": source_file,
         "date_min": _STATE["date_min"],
         "date_max": _STATE["date_max"],
         "n_tickers": len(rows),

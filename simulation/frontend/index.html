@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -9,16 +9,44 @@
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+  <script>
+    // Apply persisted theme before paint to avoid flash.
+    (() => {
+      try {
+        const t = localStorage.getItem("sim-theme");
+        if (t === "light" || t === "dark") {
+          document.documentElement.setAttribute("data-theme", t);
+        }
+      } catch (_) { /* ignore */ }
+    })();
+  </script>
 </head>
 <body>
+  <div id="progress" class="progress idle"></div>
+
   <header class="topbar">
-    <div class="brand">Strategy Simulator</div>
+    <div class="brand">Strategy <em>Simulator</em></div>
     <nav class="strategy-tabs" id="strategy-tabs"></nav>
     <div class="horizon">
       <input id="start" type="date" value="2005-01-01" />
       <span>→</span>
       <input id="end" type="date" value="2024-12-31" />
     </div>
+    <div class="source-picker" title="data source">
+      <select id="source-select" aria-label="Data source">
+        <option value="yfinance">yfinance · S&amp;P 500</option>
+        <option value="wharton">Wharton WRDS · ~865 tickers</option>
+      </select>
+    </div>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle theme">
+      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4"/>
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+      </svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>
+      </svg>
+    </button>
   </header>
 
   <main class="layout">
@@ -26,19 +54,19 @@
       <aside class="sidebar">
         <div class="panel controls-panel">
           <header class="panel-head">
-            <h3>Parameters</h3>
+            <h3><span class="figno">§ I</span>Parameters</h3>
             <span class="panel-sub" id="universe-label">universe: loading…</span>
           </header>
           <p class="strategy-summary" id="strategy-summary"></p>
           <p class="strategy-sizing" id="strategy-sizing"></p>
           <div class="params" id="strategy-params"></div>
           <div class="params-group" id="override-params-group" hidden>
-            <div class="params-divider"></div>
+            <hr class="params-divider" />
             <div class="params" id="override-params"></div>
           </div>
-          <div class="params-divider"></div>
+          <hr class="params-divider" />
           <div class="params" id="engine-params"></div>
-          <div class="params-divider"></div>
+          <hr class="params-divider" />
           <div class="universe-box">
             <div class="universe-head">
               <label for="universe-input">Universe</label>
@@ -58,6 +86,11 @@
               <em>everything except</em> those names. Tickers not in the cache are ignored
               (this button never mutates the cached universe).
             </p>
+            <p id="universe-source-note" class="universe-source-note" hidden>
+              <em>Wharton</em> is a static panel — you can <em>filter</em> to a subset of the
+              ~865 tickers it ships with, but you can't fetch new ones. Switch to
+              <em>yfinance</em> in the top bar to add tickers live.
+            </p>
           </div>
         </div>
       </aside>
@@ -65,7 +98,7 @@
       <div class="main-col">
         <div class="panel code-panel">
           <header class="panel-head">
-            <h3>Live code</h3>
+            <h3><span class="figno">§ II</span>Live code</h3>
             <span class="panel-sub" id="code-path">strategies/research_strategies.py + backtester/research_backtester.py</span>
           </header>
           <pre class="code-block"><code id="code-live" class="language-python"></code></pre>
@@ -80,15 +113,33 @@
 
         <div class="panel">
           <header class="panel-head">
-            <h3>Equity curve</h3>
-            <span class="panel-sub">strategy (net of t-cost) vs equal-weight universe</span>
+            <h3><span class="figno">§ III</span>Equity curve</h3>
+            <div class="panel-actions">
+              <button id="pin-current" class="ghost-btn" type="button" title="pin the current run as a comparison curve on this chart">
+                <span class="pin-icon" aria-hidden="true">＋</span>Pin to overlay
+              </button>
+            </div>
           </header>
           <div id="chart-equity" class="chart"></div>
+          <section class="pinned-panel" aria-label="Pinned runs">
+            <header class="pinned-head">
+              <span class="pinned-title">Comparisons</span>
+              <button id="pinned-clear" class="link-btn" type="button" disabled>clear all</button>
+            </header>
+            <div id="pinned-list" class="pinned-list"></div>
+            <p id="pinned-empty" class="pinned-empty">
+              Run a backtest, then <em>Pin to overlay</em> to compare it against the next run.
+              Tweak <em>lookback</em>, change strategies, or shift the date window — pinned curves stay on the chart.
+            </p>
+          </section>
+          <p class="figure-cap"><span class="figno">Fig. 1</span>Cumulative return of the strategy net of transaction cost, plotted against the equal-weighted universe. Pinned comparison runs overlay in the editorial palette.</p>
         </div>
+
+        <div class="dingbat">❦</div>
 
         <div class="panel">
           <header class="panel-head">
-            <h3>Survivorship audit</h3>
+            <h3><span class="figno">§ IV</span>Survivorship audit</h3>
             <span class="panel-sub" id="audit-sub">point-in-time view of the universe this run saw</span>
           </header>
           <div class="audit-body">
@@ -96,11 +147,14 @@
             <div id="chart-audit" class="audit-chart"></div>
             <p class="audit-note" id="audit-note"></p>
           </div>
+          <p class="figure-cap"><span class="figno">Fig. 2</span>Active-ticker count over the backtest window — the surviving universe seen by this run.</p>
         </div>
+
+        <div class="dingbat">❦</div>
 
         <div class="panel">
           <header class="panel-head">
-            <h3>Data inspector</h3>
+            <h3><span class="figno">§ V</span>Data inspector</h3>
             <span class="panel-sub" id="data-sub"></span>
           </header>
           <div class="data-body">

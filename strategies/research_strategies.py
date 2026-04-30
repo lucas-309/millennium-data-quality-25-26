@@ -11,6 +11,13 @@ from backtester.research_data import ResearchDataset
 
 
 def _cross_sectional_zscore(frame: pd.DataFrame) -> pd.DataFrame:
+    # A one-column frame has no cross-section: the per-row std is 0 and the
+    # regular zscore collapses every value to NaN, which the backtester then
+    # treats as "no signal" and skips every rebalance. Collapse finite values
+    # to 0 (a single sample sits at its own mean) so downstream ranking still
+    # picks the sole surviving name.
+    if frame.shape[1] <= 1:
+        return frame * 0.0
     means = frame.mean(axis=1, skipna=True)
     stds = frame.std(axis=1, skipna=True).replace(0, np.nan)
     return frame.sub(means, axis=0).div(stds, axis=0)
