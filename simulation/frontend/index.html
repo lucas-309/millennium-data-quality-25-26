@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -9,23 +9,12 @@
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
-  <script>
-    // Apply persisted theme before paint to avoid flash.
-    (() => {
-      try {
-        const t = localStorage.getItem("sim-theme");
-        if (t === "light" || t === "dark") {
-          document.documentElement.setAttribute("data-theme", t);
-        }
-      } catch (_) { /* ignore */ }
-    })();
-  </script>
 </head>
 <body>
   <div id="progress" class="progress idle"></div>
 
   <header class="topbar">
-    <div class="brand">Strategy <em>Simulator</em></div>
+    <div class="brand">SIM<em>·</em>BACKTESTER</div>
     <nav class="strategy-tabs" id="strategy-tabs"></nav>
     <div class="horizon">
       <input id="start" type="date" value="2005-01-01" />
@@ -35,18 +24,10 @@
     <div class="source-picker" title="data source">
       <select id="source-select" aria-label="Data source">
         <option value="yfinance">yfinance · S&amp;P 500</option>
-        <option value="wharton">Wharton WRDS · ~865 tickers</option>
+        <option value="wharton">Wharton WRDS · ~865</option>
       </select>
     </div>
-    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle theme">
-      <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="4"/>
-        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
-      </svg>
-      <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>
-      </svg>
-    </button>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-hidden="true" tabindex="-1"></button>
   </header>
 
   <main class="layout">
@@ -54,7 +35,7 @@
       <aside class="sidebar">
         <div class="panel controls-panel">
           <header class="panel-head">
-            <h3><span class="figno">§ I</span>Parameters</h3>
+            <h3>Parameters</h3>
             <span class="panel-sub" id="universe-label">universe: loading…</span>
           </header>
           <p class="strategy-summary" id="strategy-summary"></p>
@@ -70,10 +51,10 @@
           <div class="universe-box">
             <div class="universe-head">
               <label for="universe-input">Universe</label>
-              <span class="universe-status" id="universe-status">all cached (503)</span>
+              <span class="universe-status" id="universe-status">all cached</span>
             </div>
             <textarea id="universe-input"
-              placeholder="leave blank for full S&P 500, or paste e.g. AAPL, MSFT, NVDA, JPM"
+              placeholder="blank = full universe · or AAPL, MSFT, NVDA, JPM"
               rows="2"></textarea>
             <div class="universe-actions">
               <button id="universe-apply" type="button">Apply</button>
@@ -81,15 +62,14 @@
               <button id="universe-reset" type="button" title="clear override and use full cache">Reset</button>
             </div>
             <p class="universe-help">
-              Enter tickers comma- or newline-separated. Use <em>Apply</em> to restrict the run
-              to <em>just those</em> names; use <em>Exclude</em> to run on
-              <em>everything except</em> those names. Tickers not in the cache are ignored
-              (this button never mutates the cached universe).
+              <em>Apply</em> restricts the run to the names you list.
+              <em>Exclude</em> runs on everything else in the cache.
+              Tickers not in the cache are ignored.
             </p>
             <p id="universe-source-note" class="universe-source-note" hidden>
-              <em>Wharton</em> is a static panel — you can <em>filter</em> to a subset of the
+              <em>Wharton</em> is a static panel — filter to a subset of the
               ~865 tickers it ships with, but you can't fetch new ones. Switch to
-              <em>yfinance</em> in the top bar to add tickers live.
+              <em>yfinance</em> in the top bar to add live tickers.
             </p>
           </div>
         </div>
@@ -98,7 +78,7 @@
       <div class="main-col">
         <div class="panel code-panel">
           <header class="panel-head">
-            <h3><span class="figno">§ II</span>Live code</h3>
+            <h3>Live code</h3>
             <span class="panel-sub" id="code-path">strategies/research_strategies.py + backtester/research_backtester.py</span>
           </header>
           <pre class="code-block"><code id="code-live" class="language-python"></code></pre>
@@ -113,10 +93,10 @@
 
         <div class="panel">
           <header class="panel-head">
-            <h3><span class="figno">§ III</span>Equity curve</h3>
+            <h3>Equity curve</h3>
             <div class="panel-actions">
               <button id="pin-current" class="ghost-btn" type="button" title="pin the current run as a comparison curve on this chart">
-                <span class="pin-icon" aria-hidden="true">＋</span>Pin to overlay
+                <span class="pin-icon" aria-hidden="true">+</span>Pin
               </button>
             </div>
           </header>
@@ -128,18 +108,14 @@
             </header>
             <div id="pinned-list" class="pinned-list"></div>
             <p id="pinned-empty" class="pinned-empty">
-              Run a backtest, then <em>Pin to overlay</em> to compare it against the next run.
-              Tweak <em>lookback</em>, change strategies, or shift the date window — pinned curves stay on the chart.
+              Run a backtest then <em>Pin</em> to compare against the next run. Tweak params, change strategies, shift dates — pinned curves stay on the chart.
             </p>
           </section>
-          <p class="figure-cap"><span class="figno">Fig. 1</span>Cumulative return of the strategy net of transaction cost, plotted against the equal-weighted universe. Pinned comparison runs overlay in the editorial palette.</p>
         </div>
-
-        <div class="dingbat">❦</div>
 
         <div class="panel">
           <header class="panel-head">
-            <h3><span class="figno">§ IV</span>Survivorship audit</h3>
+            <h3>Survivorship audit</h3>
             <span class="panel-sub" id="audit-sub">point-in-time view of the universe this run saw</span>
           </header>
           <div class="audit-body">
@@ -147,14 +123,11 @@
             <div id="chart-audit" class="audit-chart"></div>
             <p class="audit-note" id="audit-note"></p>
           </div>
-          <p class="figure-cap"><span class="figno">Fig. 2</span>Active-ticker count over the backtest window — the surviving universe seen by this run.</p>
         </div>
-
-        <div class="dingbat">❦</div>
 
         <div class="panel">
           <header class="panel-head">
-            <h3><span class="figno">§ V</span>Data inspector</h3>
+            <h3>Data inspector</h3>
             <span class="panel-sub" id="data-sub"></span>
           </header>
           <div class="data-body">
