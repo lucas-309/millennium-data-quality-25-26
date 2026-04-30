@@ -1184,42 +1184,21 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     `;
     const tdPal = chartPalette();
     const tdLayout = plotLayout();
-    // Pick log vs linear from the price range. Forcing log on a narrow
-    // window (e.g. $80–$120) packs ticks onto a half-decade and they
-    // collide; forcing linear on a 30-year split-adjusted series wastes
-    // most of the y-axis on the early decades.
-    const finitePrices = d.prices.filter(
-      (p) => Number.isFinite(p) && p > 0,
-    ) as number[];
-    const minP = finitePrices.length ? Math.min(...finitePrices) : 1;
-    const maxP = finitePrices.length ? Math.max(...finitePrices) : 1;
-    const ratio = minP > 0 ? maxP / minP : 1;
-    // Only switch to log when the range is genuinely wide (>10×). For
-    // anything narrower the linear axis with a small nticks reads cleaner;
-    // forcing log on a 2–3× range packs ticks onto a half-decade and they
-    // collide. We also avoid Plotly's `dtick: "D2"` (1/2/5 per decade)
-    // because at our chart heights it lays down 6–7 labels even in the
-    // log case — `nticks` lets Plotly pick a sane subset.
-    const useLog = ratio >= 10;
+    // Plotly's `nticks` is only a soft hint on log axes — its default
+    // subdivision (D2: 1/2/5 per decade) puts 6–7 labels on a 2-decade
+    // chart, and they collide vertically in this pane. On linear axes
+    // `nticks` is a hard cap and never bunches. We just use linear for
+    // every stock; the chart still reads fine for wide ranges.
     const baseYAxis = tdLayout.yaxis as Record<string, unknown>;
-    const yaxis = useLog
-      ? {
-          ...baseYAxis,
-          title: "Price (log)",
-          type: "log",
-          tickformat: "$,.2~f",
-          nticks: 5,
-          automargin: true,
-          tickfont: { size: 11, color: tdPal.inkSoft },
-        }
-      : {
-          ...baseYAxis,
-          title: "Price",
-          tickformat: "$,.2~f",
-          nticks: 5,
-          automargin: true,
-          tickfont: { size: 11, color: tdPal.inkSoft },
-        };
+    const yaxis = {
+      ...baseYAxis,
+      title: "Price",
+      tickmode: "auto",
+      nticks: 5,
+      tickformat: "$,.2~f",
+      automargin: true,
+      tickfont: { size: 11, color: tdPal.inkSoft },
+    };
     Plotly.react(
       "detail-chart",
       [
