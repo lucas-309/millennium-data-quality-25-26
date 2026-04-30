@@ -37,11 +37,18 @@ class EquityBacktestEngine(BacktestEngine):
         num_orders = len(orders)
 
         for current_date in all_dates:
-            # Calculate current portfolio value at the start of day for sizing
+            # Calculate current portfolio value at the start of day for sizing.
+            # Skip zero-quantity entries (kept in the dict after a close) and
+            # NaN prices (delisted tickers, data gaps) — 0 * NaN = NaN would
+            # otherwise poison the running portfolio value and crash sizing.
             current_holdings_value = 0
             for h_ticker, h_quantity in holdings.items():
-                if h_ticker in data.columns:
-                    current_holdings_value += h_quantity * data.at[current_date, h_ticker]
+                if h_quantity == 0 or h_ticker not in data.columns:
+                    continue
+                px = data.at[current_date, h_ticker]
+                if pd.isna(px):
+                    continue
+                current_holdings_value += h_quantity * px
             current_portfolio_value = cash + current_holdings_value
 
             while order_index < num_orders and orders[order_index]["date"] == current_date:
@@ -93,9 +100,13 @@ class EquityBacktestEngine(BacktestEngine):
             total_value = cash
             current_day_holdings = {"Date": current_date, "Cash": cash}
             for h_ticker, h_quantity in holdings.items():
-                price = data.at[current_date, h_ticker]
-                total_value += price * h_quantity
                 current_day_holdings[h_ticker] = h_quantity
+                if h_quantity == 0 or h_ticker not in data.columns:
+                    continue
+                price = data.at[current_date, h_ticker]
+                if pd.isna(price):
+                    continue
+                total_value += price * h_quantity
 
             daily_holdings_and_cash_list.append(current_day_holdings)
             portfolio_values.append((current_date, total_value))

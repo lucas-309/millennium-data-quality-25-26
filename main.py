@@ -10,6 +10,7 @@ from backtester.data_source import YahooFinanceDataSource, PickleDataSource, Wha
 from strategies.mean_reversion import MeanReversionOrderGenerator
 from strategies.momentum_strategy import MomentumOrderGenerator
 from strategies.pairs_trading import PairsTradingOrderGenerator
+from strategies.moving_avg import MovingAverageOrderGenerator
 from backtester.backtest_engine import EquityBacktestEngine
 from backtester.metrics import ExtendedMetrics
 
@@ -17,6 +18,7 @@ STRATEGIES = {
     "1": "Mean Reversion",
     "2": "Momentum",
     "3": "Pairs Trading",
+    "4": "Moving Average",
 }
 
 DATA_SOURCES = {
@@ -193,6 +195,10 @@ def build_strategy(choice, tickers):
             pairs=pairs, lookback_window=lookback,
         ), all_tickers
 
+    elif choice == "4":
+        print(">> Moving Average (5-day vs. 20-day rolling windows)")
+        return MovingAverageOrderGenerator(), tickers
+
     else:
         print("Invalid choice.")
         sys.exit(1)
@@ -203,7 +209,7 @@ def main():
     for key, name in STRATEGIES.items():
         print(f"  {key}. {name}")
 
-    choice = input("\nSelect a strategy [1-3]: ").strip()
+    choice = input("\nSelect a strategy [1-4]: ").strip()
     if choice not in STRATEGIES:
         print("Invalid selection.")
         return
