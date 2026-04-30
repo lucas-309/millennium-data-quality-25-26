@@ -26,7 +26,7 @@ Expected CapIQ relationship file (CSV or Excel):
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import pandas as pd
@@ -65,7 +65,7 @@ class CustomerSupplierMomentumOrderGenerator(OrderGenerator):
         self,
         capiq_path: str,
         rebalance_frequency: str = "ME",
-        signal_lag_months: int = 0,
+        signal_lag_months: Union[int, Sequence[int]] = 0,
         top_fraction: float = 0.2,
         bottom_fraction: float = 0.2,
         long_notional_fraction: float = 0.5,
@@ -75,11 +75,26 @@ class CustomerSupplierMomentumOrderGenerator(OrderGenerator):
         customer_name_to_ticker: Optional[Dict[str, str]] = None,
         min_universe: int = 10,
         ctype_filter: Optional[Sequence[str]] = None,
+        initial_cash: float = 100_000.0,
+        sector_map: Optional[Dict[str, Any]] = None,
+        industry_neutral: bool = False,
+        weighting_scheme: str = "equal",
+        vol_lookback_days: int = 60,
         verbose: bool = False,
     ):
         self.capiq_path = capiq_path
         self.rebalance_frequency = rebalance_frequency
-        self.signal_lag_months = signal_lag_months
+        # Allow either a single lag (int) or a sequence of lags whose signals
+        # are averaged together. Multi-lag averaging smooths period-specific
+        # noise — the empirical result was a single lag's Sharpe being unstable
+        # across regimes, so blending neighbouring lags is a robustness win.
+        if isinstance(signal_lag_months, int):
+            self.signal_lag_months_list: List[int] = [signal_lag_months]
+        else:
+            self.signal_lag_months_list = list(signal_lag_months)
+            if not self.signal_lag_months_list:
+                raise ValueError("signal_lag_months sequence must be non-empty.")
+        self.signal_lag_months = self.signal_lag_months_list  # backwards-friendly alias
         self.top_fraction = top_fraction
         self.bottom_fraction = bottom_fraction
         self.long_notional_fraction = long_notional_fraction
@@ -93,6 +108,19 @@ class CustomerSupplierMomentumOrderGenerator(OrderGenerator):
             if ctype_filter is not None
             else self._DEFAULT_CTYPE_FILTER
         )
+        self.initial_cash = float(initial_cash)
+        self.sector_map = (
+            {t.upper(): s for t, s in sector_map.items()} if sector_map else {}
+        )
+        self.industry_neutral = industry_neutral
+        if industry_neutral and not self.sector_map:
+            raise ValueError("industry_neutral=True requires a non-empty sector_map.")
+        if weighting_scheme not in ("equal", "inv_vol"):
+            raise ValueError(
+                f"weighting_scheme must be 'equal' or 'inv_vol', got {weighting_scheme!r}."
+            )
+        self.weighting_scheme = weighting_scheme
+        self.vol_lookback_days = int(vol_lookback_days)
         self.verbose = verbose
 
         self._relationships_by_year = self._load_relationships(capiq_path)
@@ -253,13 +281,17 @@ class CustomerSupplierMomentumOrderGenerator(OrderGenerator):
     def _compute_signals(
         self,
         monthly_returns: pd.DataFrame,
-        signal_month_end: pd.Timestamp,
+        signal_month_ends: Sequence[pd.Timestamp],
         year_map: Dict[str, Dict[str, float]],
     ) -> pd.Series:
-        if signal_month_end not in monthly_returns.index:
+        # Average customer returns across the chosen lag months *first*, then
+        # apply revenue-share weighting. Linear ops commute, so this is the
+        # same as computing per-lag signals and averaging — but cheaper.
+        valid_months = [m for m in signal_month_ends if m in monthly_returns.index]
+        if not valid_months:
             return pd.Series(dtype=float)
 
-        customer_returns = monthly_returns.loc[signal_month_end]
+        customer_returns = monthly_returns.loc[valid_months].mean(axis=0, skipna=True)
         signals: Dict[str, float] = {}
 
         for supplier, customer_weights in year_map.items():
@@ -280,16 +312,33 @@ class CustomerSupplierMomentumOrderGenerator(OrderGenerator):
 
         return pd.Series(signals, dtype=float)
 
-    def _signal_month_end(
+    def _apply_industry_neutralization(self, signals: pd.Series) -> pd.Series:
+        # Subtract within-sector mean from each supplier's signal so the L/S
+        # rank reflects within-industry information rather than sector beta.
+        # Suppliers without a known sector are pooled into a synthetic "_NA"
+        # bucket so they aren't dropped.
+        if not self.industry_neutral or signals.empty:
+            return signals
+        sectors = signals.index.map(lambda t: self.sector_map.get(t, "_NA"))
+        as_frame = pd.DataFrame({"signal": signals.values, "sector": sectors})
+        sector_means = as_frame.groupby("sector")["signal"].transform("mean")
+        return pd.Series(
+            (as_frame["signal"] - sector_means).values, index=signals.index
+        )
+
+    def _signal_month_ends(
         self, monthly_index: pd.DatetimeIndex, rebalance_date: pd.Timestamp
-    ) -> Optional[pd.Timestamp]:
+    ) -> List[pd.Timestamp]:
         locs = monthly_index.get_indexer([rebalance_date])
         if locs[0] < 0:
-            return None
-        pos = int(locs[0]) - self.signal_lag_months
-        if pos < 0 or pos >= len(monthly_index):
-            return None
-        return monthly_index[pos]
+            return []
+        base = int(locs[0])
+        out: List[pd.Timestamp] = []
+        for lag in self.signal_lag_months_list:
+            pos = base - int(lag)
+            if 0 <= pos < len(monthly_index):
+                out.append(monthly_index[pos])
+        return out
 
     # --- order construction ------------------------------------------------
 
@@ -310,11 +359,16 @@ class CustomerSupplierMomentumOrderGenerator(OrderGenerator):
         rebalance_dates = monthly_returns.index
 
         orders: List[Dict[str, Any]] = []
-        previous_positions: Dict[str, str] = {}
 
-        # Precompute the "next" rebalance date for each current rebalance, used to
-        # require clean price coverage through the holding period (the engine NaNs
-        # out portfolio value if a held ticker goes missing mid-period).
+        # Delta rebalancing: track the strategy's own model of (a) shares held
+        # per ticker and (b) cash balance. At each rebalance, compute target
+        # share counts at integer granularity and emit only the *delta* for
+        # each ticker. Tickers that stay in the book at the same target size
+        # generate zero turnover instead of the close-and-reopen pair the old
+        # logic emitted.
+        held_shares: Dict[str, int] = {}
+        model_cash = self.initial_cash
+
         next_rebalance_map = dict(zip(rebalance_dates[:-1], rebalance_dates[1:]))
         last_data_date = data.index[-1]
 
@@ -323,21 +377,20 @@ class CustomerSupplierMomentumOrderGenerator(OrderGenerator):
             if applicable_year is None:
                 continue
 
-            signal_month = self._signal_month_end(rebalance_dates, rebalance_date)
-            if signal_month is None:
+            signal_months = self._signal_month_ends(rebalance_dates, rebalance_date)
+            if not signal_months:
                 continue
 
             signals = self._compute_signals(
-                monthly_returns, signal_month, self._relationships_by_year[applicable_year]
+                monthly_returns, signal_months, self._relationships_by_year[applicable_year]
             ).dropna()
+            signals = self._apply_industry_neutralization(signals).dropna()
             if len(signals) < self.min_universe:
                 continue
 
             holding_end = next_rebalance_map.get(rebalance_date, last_data_date)
             tradeable_today = self._tradeable_on(data, rebalance_date)
             tradeable_forward = self._tradeable_through(data, rebalance_date, holding_end)
-            # Only open positions we can hold cleanly to next rebalance;
-            # close decisions are made against today's price only.
             signals = signals[signals.index.isin(tradeable_forward)]
             if len(signals) < self.min_universe:
                 continue
@@ -348,56 +401,102 @@ class CustomerSupplierMomentumOrderGenerator(OrderGenerator):
             short_tickers = sorted_signals.head(n_short).index.tolist()
             long_tickers = sorted_signals.tail(n_long).index.tolist()
 
-            # Close every previous position (that is tradeable today) before
-            # opening the new book. Each rebalance yields exactly the target
-            # portfolio shape; turnover cost accepted as-is. If a previously-
-            # held ticker is untradeable today (NaN/zero price, e.g. delisted
-            # or a data gap), keep it on the books and retry on the next
-            # rebalance rather than crashing the engine.
-            carried_over: Dict[str, str] = {}
-            for ticker, side in previous_positions.items():
-                if ticker not in tradeable_today:
-                    # Shouldn't normally happen: positions are only opened when
-                    # _tradeable_through guarantees coverage through this date.
-                    # Carrying over when the ticker has gone NaN today will crash
-                    # the engine on portfolio valuation, so the caller's price
-                    # panel has a quality issue we can't paper over here.
-                    carried_over[ticker] = side
+            # Mark the existing book to market, then size the new target book
+            # against the current model portfolio value (cash drifts with PnL).
+            mtm_value = 0.0
+            for t, qty in held_shares.items():
+                if qty == 0 or t not in tradeable_today:
                     continue
-                if side == "LONG":
-                    orders.append({
-                        "date": rebalance_date, "type": "SELL",
-                        "ticker": ticker, "quantity": 1.0,
-                    })
-                else:
+                mtm_value += qty * data.at[rebalance_date, t]
+            model_pv = model_cash + mtm_value
+            if model_pv <= 0:
+                # Strategy has been wiped out; stop trading rather than emit
+                # orders against meaningless target sizes.
+                break
+
+            long_weights = self._book_weights(data, rebalance_date, long_tickers)
+            short_weights = self._book_weights(data, rebalance_date, short_tickers)
+            long_notional_total = self.long_notional_fraction * model_pv
+            short_notional_total = self.short_notional_fraction * model_pv
+
+            target_shares: Dict[str, int] = {}
+            for t in long_tickers:
+                px = data.at[rebalance_date, t]
+                target_shares[t] = int((long_notional_total * long_weights[t]) // px)
+            for t in short_tickers:
+                px = data.at[rebalance_date, t]
+                target_shares[t] = -int((short_notional_total * short_weights[t]) // px)
+
+            # Tickers we hold but didn't pick today (and that are tradeable today)
+            # need to be exited — set their target to zero. Tickers untradeable
+            # today are left at status quo: emitting an order against a NaN price
+            # would crash the engine.
+            for t in list(held_shares.keys()):
+                if t in target_shares:
+                    continue
+                if t in tradeable_today:
+                    target_shares[t] = 0
+
+            # Emit deltas only.
+            for ticker, target in target_shares.items():
+                current = held_shares.get(ticker, 0)
+                delta = target - current
+                if delta == 0:
+                    continue
+                price = data.at[rebalance_date, ticker]
+                if pd.isna(price) or price <= 0:
+                    continue
+                if delta > 0:
                     orders.append({
                         "date": rebalance_date, "type": "BUY",
-                        "ticker": ticker, "quantity": 1.0,
+                        "ticker": ticker, "quantity": int(delta),
                     })
+                    model_cash -= delta * price
+                else:
+                    orders.append({
+                        "date": rebalance_date, "type": "SELL",
+                        "ticker": ticker, "quantity": int(abs(delta)),
+                    })
+                    model_cash += abs(delta) * price
+                held_shares[ticker] = target
 
-            long_frac = self.long_notional_fraction / len(long_tickers) if long_tickers else 0.0
-            short_frac = self.short_notional_fraction / len(short_tickers) if short_tickers else 0.0
-
-            for ticker in long_tickers:
-                orders.append({
-                    "date": rebalance_date, "type": "BUY",
-                    "ticker": ticker, "quantity": long_frac,
-                })
-            for ticker in short_tickers:
-                orders.append({
-                    "date": rebalance_date, "type": "SELL",
-                    "ticker": ticker, "quantity": short_frac,
-                })
-
-            previous_positions = {t: "LONG" for t in long_tickers}
-            previous_positions.update({t: "SHORT" for t in short_tickers})
-            previous_positions.update(carried_over)
-
-        # Stable sort by date preserves the close-before-open ordering within each date,
-        # which matters because the engine reads order.cash at start-of-day and won't
-        # refresh it mid-day — closes must execute before opens draw on cash.
         orders.sort(key=lambda o: o["date"])
         return orders
+
+    def _book_weights(
+        self, data: pd.DataFrame, rebalance_date: pd.Timestamp, tickers: List[str]
+    ) -> Dict[str, float]:
+        """Within-book weights summing to 1.0 across ``tickers``.
+
+        Equal-weight gives each name 1/n. Inverse-vol weight is proportional
+        to 1/realized_vol (trailing ``vol_lookback_days``), which down-sizes
+        higher-vol names so each name contributes roughly the same risk —
+        usually the biggest single Sharpe lift per bp of complexity added.
+        """
+        if not tickers:
+            return {}
+        if self.weighting_scheme == "equal":
+            w = 1.0 / len(tickers)
+            return {t: w for t in tickers}
+
+        end_loc = data.index.get_loc(rebalance_date)
+        start_loc = max(end_loc - self.vol_lookback_days, 0)
+        window = data.iloc[start_loc : end_loc + 1][tickers]
+        rets = window.pct_change(fill_method=None)
+        vols = rets.std()
+        inv_vols = 1.0 / vols.replace(0, np.nan)
+
+        # Tickers with no usable vol fall back to the median inverse-vol so they
+        # aren't silently dropped from the book.
+        fallback = inv_vols.median()
+        if pd.isna(fallback) or fallback <= 0:
+            return {t: 1.0 / len(tickers) for t in tickers}
+        inv_vols = inv_vols.fillna(fallback)
+        total = inv_vols.sum()
+        if total <= 0:
+            return {t: 1.0 / len(tickers) for t in tickers}
+        weights = (inv_vols / total).to_dict()
+        return {t: float(weights.get(t, 1.0 / len(tickers))) for t in tickers}
 
     @staticmethod
     def _tradeable_on(data: pd.DataFrame, rebalance_date: pd.Timestamp) -> set:
