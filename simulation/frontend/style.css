@@ -518,17 +518,17 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
   text-shadow: 0 0 6px var(--amber-soft);
 }
 .param-row .param-value input[type="number"] {
-  width: 70px;
+  width: 60px;
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--amber);
-  padding: 2px 7px;
+  padding: 1px 6px;
   font: inherit;
-  font-size: 14px;
+  font-size: 13px;
   text-align: right;
   font-variant-numeric: tabular-nums;
   -moz-appearance: textfield;
-  height: 28px;
+  height: 22px;
   text-shadow: 0 0 6px var(--amber-soft);
 }
 .param-row .param-value input[type="number"]::-webkit-outer-spin-button,
@@ -597,8 +597,8 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 
 .param-help {
   font-family: var(--font-sans);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: 11px;
+  line-height: 1.35;
   color: var(--text-3);
   margin: 0;
 }
@@ -722,7 +722,7 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
   border: 1px solid var(--border);
 }
 .m-card {
-  padding: 18px 22px;
+  padding: 12px 22px 14px;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
   position: relative;
@@ -730,7 +730,6 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 .m-card:nth-child(4n) { border-right: 0; }
 .m-card:nth-last-child(-n+4) { border-bottom: 0; }
 .m-card.secondary {
-  padding: 12px 22px 14px;
   background: var(--panel-2);
 }
 .m-card::before {
@@ -744,48 +743,32 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 .m-card:last-child { border-right: 0; }
 .m-label {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 500;
-  letter-spacing: 0.22em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-3);
-  margin-bottom: 8px;
-}
-.m-card.secondary .m-label {
-  font-size: 11px;
-  letter-spacing: 0.18em;
   margin-bottom: 4px;
 }
 .m-value {
   font-family: var(--font-mono);
-  font-size: 44px;
+  font-size: 26px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: var(--amber);
   line-height: 1.0;
   letter-spacing: -0.02em;
-  text-shadow: 0 0 16px var(--amber-glow);
-}
-.m-card.secondary .m-value {
-  font-size: 26px;
   text-shadow: 0 0 10px var(--amber-glow);
 }
-.m-value.good { color: var(--gain); text-shadow: 0 0 16px rgba(105,201,122,0.5); }
-.m-value.bad  { color: var(--loss); text-shadow: 0 0 16px rgba(224,112,80,0.5); }
-.m-card.secondary .m-value.good { text-shadow: 0 0 10px rgba(105,201,122,0.5); }
-.m-card.secondary .m-value.bad  { text-shadow: 0 0 10px rgba(224,112,80,0.5); }
+.m-value.good { color: var(--gain); text-shadow: 0 0 10px rgba(105,201,122,0.5); }
+.m-value.bad  { color: var(--loss); text-shadow: 0 0 10px rgba(224,112,80,0.5); }
 .m-sub {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 10.5px;
   color: var(--text-3);
-  margin-top: 7px;
+  margin-top: 3px;
   font-variant-numeric: tabular-nums;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-.m-card.secondary .m-sub {
-  font-size: 10.5px;
-  margin-top: 3px;
   letter-spacing: 0.06em;
 }
 
@@ -1004,21 +987,30 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
   border-bottom: 1px solid var(--border);
   text-align: left;
   z-index: 1;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 .ticker-table tbody td {
   padding: 6px 10px;
   border-bottom: 1px solid var(--border-soft);
   color: var(--text);
   height: 32px;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.ticker-table col.col-ticker { width: 12%; }
-.ticker-table col.col-name   { width: 24%; }
+/* Short fields never wrap — set tight columns and let nowrap above hold the line. */
+.ticker-table col.col-ticker { width: 9%; }
+.ticker-table col.col-start  { width: 13%; }
+.ticker-table col.col-end    { width: 13%; }
+.ticker-table col.col-ret    { width: 12%; }
+/* Long fields ellipsis-truncate. NAME wider than SECTOR because company
+   names are longer on average than sector strings. */
+.ticker-table col.col-name   { width: 33%; }
 .ticker-table col.col-sector { width: 20%; }
-.ticker-table col.col-start  { width: 14%; }
-.ticker-table col.col-end    { width: 14%; }
-.ticker-table col.col-ret    { width: 16%; }
+/* Body cells right-align to match the right-aligned headers for start/end/return. */
+.ticker-table tbody td:nth-child(4),
+.ticker-table tbody td:nth-child(5),
+.ticker-table tbody td:nth-child(6) { text-align: right; }
 .ticker-table tbody tr {
   cursor: pointer;
   transition: background 0.05s;
