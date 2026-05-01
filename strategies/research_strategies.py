@@ -348,8 +348,11 @@ class PEADStrategy(SignalStrategy):
         from pathlib import Path
         path = Path(__file__).resolve().parent.parent / "backtester" / "surprise earning.csv"
         if not path.exists():
-            cls._events_cache = pd.DataFrame(columns=["ticker", "anndats", "suescore"])
-            return cls._events_cache
+            raise FileNotFoundError(
+                f"PEAD requires {path.name} (the SUE event panel) but it was "
+                f"not found at {path}. If running in Docker, check .dockerignore "
+                f"isn't excluding backtester/*.csv."
+            )
         df = pd.read_csv(path, usecols=["TICKER", "OFTIC", "anndats", "suescore"])
         # OFTIC is the standard exchange ticker; TICKER is the WRDS internal id
         # (e.g. ARRA for Agilent). Prefer OFTIC, fall back to TICKER.
