@@ -337,10 +337,10 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 }
 .strategy-summary {
   margin: 0;
-  padding: 10px 14px 8px;
+  padding: 6px 12px 5px;
   font-family: var(--font-sans);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.4;
   color: var(--text-2);
   background: var(--panel-2);
 }
@@ -349,10 +349,10 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
   display: block;
   font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.2em;
   color: var(--amber);
-  margin-bottom: 5px;
+  margin-bottom: 3px;
 }
 .strategy-summary:empty,
 .strategy-sizing:empty { display: none; }
@@ -385,10 +385,10 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 
 .strategy-sizing {
   margin: 0;
-  padding: 6px 14px 12px;
+  padding: 4px 12px 7px;
   font-family: var(--font-mono);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--text-3);
   background: var(--panel-2);
   border-bottom: 1px solid var(--border);
@@ -399,10 +399,10 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 
 /* Universe box */
 .universe-box {
-  padding: 12px 14px 14px;
+  padding: 8px 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 .universe-head { display: flex; align-items: center; justify-content: space-between; }
 .universe-head label {
@@ -421,15 +421,15 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 }
 .universe-box textarea {
   width: 100%;
-  min-height: 56px;
+  min-height: 36px;
   resize: vertical;
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 8px 10px;
+  padding: 6px 8px;
   font-family: var(--font-mono);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.4;
 }
 .universe-box textarea:focus { outline: none; border-color: var(--amber); }
 .universe-actions { display: flex; gap: 4px; }
@@ -438,13 +438,13 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 6px 8px;
+  padding: 4px 6px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   cursor: pointer;
-  height: 32px;
+  height: 26px;
   transition: border-color 0.08s, color 0.08s, background 0.08s;
 }
 .universe-actions button:hover {
@@ -478,20 +478,20 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 
 /* Params */
 .params {
-  padding: 14px;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 8px;
 }
 .params-divider {
   border: 0;
   border-top: 1px dashed var(--border);
-  margin: 0 14px;
+  margin: 0 12px;
 }
 .param-row {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 3px;
 }
 .param-row .param-head {
   display: flex;
@@ -790,7 +790,8 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 }
 
 /* ---- Charts ---- */
-.chart { height: 480px; padding: 10px 12px 6px; }
+.chart { height: 540px; padding: 10px 12px 6px; }
+.heatmap-chart { padding: 10px 14px 14px; min-height: 180px; }
 .figure-cap { display: none; }
 .dingbat { display: none; }
 

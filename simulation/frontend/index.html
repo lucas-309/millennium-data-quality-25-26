@@ -60,11 +60,6 @@
               <button id="universe-fetch" type="button" title="exclude these tickers — run on everything else in the cache">Exclude</button>
               <button id="universe-reset" type="button" title="clear override and use full cache">Reset</button>
             </div>
-            <p class="universe-help">
-              Enter tickers comma- or newline-separated. Use <em>Apply</em> to restrict the run
-              to just those names; use <em>Exclude</em> to run on everything except those names.
-              Tickers not in the cache are ignored.
-            </p>
             <p id="universe-source-note" class="universe-source-note" hidden>
               <em>Wharton</em> is a static panel — filter to a subset of the
               ~865 tickers it ships with, but you can't fetch new ones. Switch to
@@ -121,6 +116,14 @@
               Run a backtest then <em>Pin</em> to compare against the next run. Tweak params, change strategies, shift dates — pinned curves stay on the chart.
             </p>
           </section>
+        </div>
+
+        <div class="panel">
+          <header class="panel-head">
+            <h3>Monthly returns</h3>
+            <span class="panel-sub" id="monthly-sub">net of t-cost · year × month</span>
+          </header>
+          <div id="chart-monthly" class="heatmap-chart"></div>
         </div>
 
         <div class="panel">
