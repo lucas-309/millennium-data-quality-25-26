@@ -205,6 +205,24 @@ interface SimRequest {
   data_source?: string;
 }
 
+interface SignalRow {
+  ticker: string;
+  score: number;
+  rank: number;
+  last_price: number | null;
+}
+
+interface SignalPreview {
+  as_of: string | null;
+  longs: SignalRow[];
+  shorts: SignalRow[];
+  include_shorts: boolean;
+  strategy_id: string;
+  strategy_label?: string;
+  n_universe: number;
+  top_n?: number;
+}
+
 interface PinnedRun {
   id: string;
   label: string;          // user-editable; auto-generated from strategy + params
@@ -889,6 +907,9 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       lastRender.simPayload = body as unknown as SimRequest;
       renderResults(data);
       setStatus(`ready · last run ${(elapsed / 1000).toFixed(2)}s`, "ready");
+      // Fire-and-forget signal preview — non-blocking, errors are logged
+      // not surfaced (the main result already landed).
+      fetchSignalPreview(p).catch((e) => console.error("signal_preview", e));
     } catch (exc) {
       console.error(exc);
       const msg = exc instanceof Error ? exc.message : String(exc);
@@ -1300,6 +1321,87 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       );
       host.appendChild(chip);
     }
+  }
+
+  async function fetchSignalPreview(p: RunPayload): Promise<void> {
+    if (!state.currentStrategy) return;
+    const body = {
+      strategy_id: state.currentStrategy.id,
+      strategy_params: p.strategyParams,
+      engine_overrides: p.engineOverrides,
+      data_source: state.dataSource,
+      top_n: 10,
+    };
+    try {
+      const res = await fetch("/api/signal/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        renderSignalPreview(null);
+        return;
+      }
+      const data = (await res.json()) as SignalPreview;
+      renderSignalPreview(data);
+    } catch (_) {
+      renderSignalPreview(null);
+    }
+  }
+
+  function renderSignalPreview(data: SignalPreview | null): void {
+    const host = document.getElementById("signal-preview");
+    const sub = document.getElementById("signal-sub");
+    if (!host) return;
+    if (!data || (!data.longs.length && !data.shorts.length)) {
+      host.innerHTML = `<div class="signal-empty">No signal data for the latest date.</div>`;
+      return;
+    }
+    if (sub) {
+      const dateStr = data.as_of || "—";
+      const universe = data.n_universe ? `${data.n_universe} names` : "";
+      sub.textContent = `as of ${dateStr}${universe ? " · " + universe : ""}`;
+    }
+    const fmtScore = (s: number): string =>
+      Math.abs(s) >= 100 ? s.toFixed(1)
+      : Math.abs(s) >= 10 ? s.toFixed(2)
+      : s.toFixed(4);
+    const fmtPrice = (p: number | null): string =>
+      p == null ? "—" : `$${p >= 1000 ? p.toFixed(0) : p.toFixed(2)}`;
+    const longRows = data.longs
+      .map(
+        (r) => `
+        <tr>
+          <td class="sp-rank">${r.rank}</td>
+          <td class="sp-tic">${escapeHtml(r.ticker)}</td>
+          <td class="sp-score gain">${fmtScore(r.score)}</td>
+          <td class="sp-px">${fmtPrice(r.last_price)}</td>
+        </tr>`,
+      )
+      .join("");
+    const shortRows = data.shorts
+      .map(
+        (r) => `
+        <tr>
+          <td class="sp-rank">${r.rank}</td>
+          <td class="sp-tic">${escapeHtml(r.ticker)}</td>
+          <td class="sp-score loss">${fmtScore(r.score)}</td>
+          <td class="sp-px">${fmtPrice(r.last_price)}</td>
+        </tr>`,
+      )
+      .join("");
+    const longsCol = `
+      <div class="sp-col sp-longs">
+        <div class="sp-col-head">▎ TOP ${data.longs.length} LONGS</div>
+        <table class="sp-table"><tbody>${longRows}</tbody></table>
+      </div>`;
+    const shortsCol = data.include_shorts && data.shorts.length
+      ? `<div class="sp-col sp-shorts">
+           <div class="sp-col-head">▎ BOTTOM ${data.shorts.length} SHORTS</div>
+           <table class="sp-table"><tbody>${shortRows}</tbody></table>
+         </div>`
+      : "";
+    host.innerHTML = longsCol + shortsCol;
   }
 
   function renderMonthlyHeatmap(monthly: MonthlyReturn[]): void {
@@ -1951,9 +2053,103 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     });
   }
 
+  function isInputFocused(): boolean {
+    const el = document.activeElement as HTMLElement | null;
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
+  function bindHotkeys(): void {
+    document.addEventListener("keydown", (ev) => {
+      // Esc — always works, clears toast and blurs current input.
+      if (ev.key === "Escape") {
+        const t = document.getElementById("toast");
+        if (t) t.classList.add("hidden");
+        if (document.activeElement && (document.activeElement as HTMLElement).blur) {
+          (document.activeElement as HTMLElement).blur();
+        }
+        return;
+      }
+      // Slash — focus the ticker search (only when not already in an input).
+      if (ev.key === "/" && !isInputFocused()) {
+        ev.preventDefault();
+        const search = document.getElementById("ticker-search") as HTMLInputElement | null;
+        if (search) {
+          search.focus();
+          search.select();
+        }
+        return;
+      }
+      // Cmd/Ctrl + P — pin current run.
+      if ((ev.metaKey || ev.ctrlKey) && (ev.key === "p" || ev.key === "P") && !ev.shiftKey) {
+        ev.preventDefault();
+        pinCurrentRun();
+        return;
+      }
+      // Cmd/Ctrl + Shift + R — reset every visible param to its default.
+      if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey && (ev.key === "R" || ev.key === "r")) {
+        ev.preventDefault();
+        resetAllParams();
+        return;
+      }
+      // Enter — run (only when no input is focused; inputs already have
+      // their own change handlers that schedule a run).
+      if (ev.key === "Enter" && !isInputFocused() && !ev.metaKey && !ev.ctrlKey) {
+        ev.preventDefault();
+        scheduleRun();
+        return;
+      }
+      // 1-9 — switch strategy by index (only when not in an input).
+      if (!isInputFocused() && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+        const n = parseInt(ev.key, 10);
+        if (Number.isFinite(n) && n >= 1 && n <= 9) {
+          const strategies = state.catalog?.strategies || [];
+          if (n - 1 < strategies.length) {
+            ev.preventDefault();
+            selectStrategy(strategies[n - 1].id);
+          }
+        }
+      }
+    });
+  }
+
+  function resetAllParams(): void {
+    if (!state.currentStrategy || !state.catalog) return;
+    let changed = 0;
+    const writeDefault = (id: string, val: number): void => {
+      const el = document.getElementById(id) as HTMLInputElement | null;
+      if (!el) return;
+      if (parseFloat(el.value) !== val) {
+        el.value = String(val);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        changed += 1;
+      }
+    };
+    for (const p of state.currentStrategy.params) {
+      writeDefault(`strat-${p.name}`, p.default);
+    }
+    for (const p of state.currentStrategy.engine_overrides || []) {
+      writeDefault(`ovr-${p.name}`, p.default);
+    }
+    for (const p of state.catalog.engine_params) {
+      writeDefault(`eng-${p.name}`, p.default);
+    }
+    if (changed) {
+      toast(`reset ${changed} param${changed === 1 ? "" : "s"} to defaults`, false, 2000);
+      renderLiveCode();
+      scheduleRun();
+    } else {
+      toast("already at defaults", false, 1500);
+    }
+  }
+
   (async (): Promise<void> => {
     setStatus("connecting…", "loading");
     renderPinnedList();
+    bindHotkeys();
     try {
       if (!(await waitReady())) return;
       state.catalog = await loadCatalog();

@@ -824,6 +824,99 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     return response
 
 
+def signal_preview(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the strategy's score function on the latest available date and
+    return the top-N longs / bottom-N shorts, with current price for
+    display. Skips the full backtest — just a single forward pass through
+    `strategy.generate(dataset).scores`.
+    """
+    requested_source = body.get("data_source") or body.get("source")
+    if requested_source:
+        ensure_ready(requested_source)
+    with _LOCK:
+        if not _STATE["ready"]:
+            raise RuntimeError("simulator not ready — wait for warmup")
+        dataset = _STATE["dataset"]
+
+    strategy_id = body.get("strategy_id", "momentum")
+    if strategy_id not in STRATEGY_BY_ID:
+        raise ValueError(f"unknown strategy_id: {strategy_id}")
+    strat_entry = STRATEGY_BY_ID[strategy_id]
+
+    strategy_params = body.get("strategy_params", {}) or {}
+    kw_allowed = {p["name"] for p in strat_entry["params"]}
+    strat_kwargs = {k: strategy_params[k] for k in kw_allowed if k in strategy_params}
+    strat_instance = strat_entry["cls"](**strat_kwargs)
+
+    top_n = int(body.get("top_n") or 10)
+    top_n = max(1, min(50, top_n))
+    short_quantile = float(
+        (body.get("engine_overrides") or {}).get("short_quantile", 0.0)
+    )
+    include_shorts = short_quantile > 0.0
+
+    try:
+        signal = strat_instance.generate(dataset)
+    except Exception as exc:
+        raise RuntimeError(f"strategy.generate failed: {exc}") from exc
+
+    scores = signal.scores
+    if scores is None or scores.empty:
+        return {
+            "as_of": None, "longs": [], "shorts": [], "include_shorts": include_shorts,
+            "strategy_id": strategy_id, "n_universe": 0,
+        }
+
+    # Find the last row with at least N finite values; walk backwards a few
+    # days if today's row is mostly NaN (e.g. weekends, holidays, partial
+    # data on the trailing edge).
+    last_row = None
+    last_date = None
+    for ts in scores.index[::-1]:
+        row = scores.loc[ts].dropna()
+        if len(row) >= max(top_n, 5):
+            last_row = row
+            last_date = ts
+            break
+    if last_row is None:
+        return {
+            "as_of": None, "longs": [], "shorts": [], "include_shorts": include_shorts,
+            "strategy_id": strategy_id, "n_universe": 0,
+        }
+
+    sorted_desc = last_row.sort_values(ascending=False)
+    n = len(sorted_desc)
+
+    last_prices = dataset.prices.loc[last_date] if last_date in dataset.prices.index else dataset.prices.iloc[-1]
+
+    def _row(ticker: str, score: float, rank: int) -> Dict[str, Any]:
+        price = last_prices.get(ticker)
+        return {
+            "ticker": ticker,
+            "score": float(score),
+            "rank": rank,
+            "last_price": float(price) if pd.notna(price) else None,
+        }
+
+    longs = [_row(t, s, i + 1) for i, (t, s) in enumerate(sorted_desc.head(top_n).items())]
+    shorts: List[Dict[str, Any]] = []
+    if include_shorts:
+        # Bottom-N (worst scores). Rank from the bottom upwards: rank 1 = worst.
+        bottom = sorted_desc.tail(top_n).iloc[::-1]
+        shorts = [_row(t, s, i + 1) for i, (t, s) in enumerate(bottom.items())]
+
+    return {
+        "as_of": str(last_date.date()) if hasattr(last_date, "date") else str(last_date),
+        "longs": longs,
+        "shorts": shorts,
+        "include_shorts": include_shorts,
+        "strategy_id": strategy_id,
+        "strategy_label": strat_entry["label"],
+        "n_universe": int(n),
+        "top_n": top_n,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Data inspector
 # ---------------------------------------------------------------------------

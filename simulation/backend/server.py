@@ -208,6 +208,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=400)
             return
 
+        if path == "/api/signal/preview":
+            try:
+                result = simulator.signal_preview(body)
+                self._send_json(result)
+            except RuntimeError as exc:
+                self._send_json({"error": str(exc), "status": simulator.status()}, status=409)
+            except Exception as exc:
+                traceback.print_exc()
+                self._send_json({"error": str(exc)}, status=400)
+            return
+
         self.send_error(404, "unknown endpoint")
 
 
