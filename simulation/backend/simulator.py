@@ -108,6 +108,34 @@ _SHORT_QUANTILE_OVERRIDE = {
 
 STRATEGIES = [
     {
+        "id": "momentum",
+        "cls": rs.CrossSectionalMomentumStrategy,
+        "cls_name": "CrossSectionalMomentumStrategy",
+        "label": "Momentum",
+        "formula": "score(t, i) = ln( P[t − skip, i] / P[t − lookback, i] )",
+        "summary": "Rank stocks by their return from (today − lookback_days) to (today − skip_days); long the top quantile, optionally short the bottom.",
+        "params": [
+            {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 504, "step": 21,
+             "help": "Return window (126 ≈ 6mo)."},
+            {"name": "skip_days",     "type": "int", "default": 21,  "min": 0,  "max": 63,  "step": 1,
+             "help": "Skip last N days to drop short-term reversal (21 ≈ 1mo)."},
+        ],
+        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
+    },
+    {
+        "id": "mean_reversion",
+        "cls": rs.ShortTermReversalStrategy,
+        "cls_name": "ShortTermReversalStrategy",
+        "label": "Mean Reversion",
+        "formula": "score(t, i) = − ln( P[t, i] / P[t − lookback, i] )",
+        "summary": "Score stocks by their negated recent return; long the biggest recent losers, expecting a bounce.",
+        "params": [
+            {"name": "lookback_days", "type": "int", "default": 5, "min": 1, "max": 21, "step": 1,
+             "help": "Recent-return window; biggest losers rank highest."},
+        ],
+        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
+    },
+    {
         "id": "value_composite",
         "cls": rs.ValueCompositeStrategy,
         "cls_name": "ValueCompositeStrategy",
