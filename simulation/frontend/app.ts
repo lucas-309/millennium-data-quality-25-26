@@ -103,6 +103,12 @@ interface RunConfig {
   leverage: number;
 }
 
+interface MonthlyReturn {
+  year: number;
+  month: number;
+  ret: number;
+}
+
 interface SimulationResult {
   metrics_net?: Metrics;
   metrics_benchmark?: Metrics;
@@ -110,6 +116,9 @@ interface SimulationResult {
   dates: string[];
   cumulative_benchmark: number[];
   cumulative_net: number[];
+  cumulative_drawdown?: number[];
+  cumulative_drawdown_benchmark?: number[];
+  monthly_returns?: MonthlyReturn[];
   survivorship_audit?: SurvivorshipAudit;
   universe?: UniverseSummary;
   config?: RunConfig;
@@ -202,8 +211,9 @@ interface PinnedRun {
   strategyLabel: string;  // for display in chip subtext
   colorIdx: number;       // index into series-color rotation
   dates: string[];
-  cumulativeNet: number[]; // already in percent (× 100), like the live trace
-  payload: SimRequest;     // snapshot of the request that produced this curve
+  cumulativeNet: number[];      // already in percent (× 100), like the live trace
+  cumulativeDrawdown?: number[]; // fraction underwater, percent (× 100)
+  payload: SimRequest;          // snapshot of the request that produced this curve
   metricsNet?: Metrics;
 }
 
@@ -681,9 +691,14 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     const stratArgs = Object.entries(strategyParams)
       .map(([k, v]) => `    ${k}=${pyRepr(v)},`)
       .join("\n");
+    // If the user edited the class source, parse the new class name so the
+    // "your run" snippet reflects what actually executes.
+    const editedSrc = state.editedSourceByStrategy[s.id];
+    const editedClsMatch = editedSrc ? editedSrc.match(/class\s+(\w+)\s*\(/) : null;
+    const clsName = editedClsMatch ? editedClsMatch[1] : s.cls_name;
     const stratCall = stratArgs
-      ? `strategy = ${s.cls_name}(\n${stratArgs}\n)`
-      : `strategy = ${s.cls_name}()`;
+      ? `strategy = ${clsName}(\n${stratArgs}\n)`
+      : `strategy = ${clsName}()`;
 
     // Merge: live knobs + per-strategy overrides win; fixed defaults fill in.
     const fixedEngine: Record<string, unknown> = { ...state.catalog!.fixed_engine };

@@ -765,8 +765,24 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     net_cum = (1 + result.net_returns.fillna(0)).cumprod() - 1
     bench_cum = (1 + benchmark.reindex(result.net_returns.index).fillna(0)).cumprod() - 1
 
+    # Drawdown curve — fraction underwater from running peak. Same formula
+    # as backtester/tearsheet.py:38 but emitted as a JSON-friendly list.
+    net_dd = (net_cum.add(1) / net_cum.add(1).cummax() - 1)
+    bench_dd = (bench_cum.add(1) / bench_cum.add(1).cummax() - 1)
+
     turnover_ann = float(result.turnover.mean() * 252)
     tcost_drag_ann = float(result.transaction_costs.mean() * 252)
+
+    # Monthly returns — port of backtester/tearsheet.py:76. Emit a list of
+    # {year, month, ret} cells so the frontend can pivot it into a heatmap.
+    monthly_ret = (
+        result.net_returns.resample("ME").apply(lambda r: (1 + r).prod() - 1)
+    )
+    monthly_payload = [
+        {"year": int(d.year), "month": int(d.month), "ret": float(v)}
+        for d, v in monthly_ret.items()
+        if pd.notna(v)
+    ]
 
     response = {
         "strategy": {
@@ -778,6 +794,9 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
         "dates": [d.strftime("%Y-%m-%d") for d in result.net_returns.index],
         "cumulative_net": [float(v) for v in net_cum.values],
         "cumulative_benchmark": [float(v) for v in bench_cum.values],
+        "cumulative_drawdown": [float(v) for v in net_dd.values],
+        "cumulative_drawdown_benchmark": [float(v) for v in bench_dd.values],
+        "monthly_returns": monthly_payload,
         "metrics_net": _metrics(
             result.net_returns,
             benchmark=benchmark.reindex(result.net_returns.index).fillna(0),
