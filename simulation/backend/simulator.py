@@ -206,20 +206,30 @@ STRATEGIES = [
         ],
     },
     {
-        "id": "low_volatility",
-        "cls": rs.LowVolatilityStrategy,
-        "cls_name": "LowVolatilityStrategy",
-        "label": "Low Volatility",
-        "formula": "score(t, i) = − σ_window( returns(i) )",
+        "id": "residual_momentum",
+        "cls": rs.ResidualMomentumStrategy,
+        "cls_name": "ResidualMomentumStrategy",
+        "label": "Residual Momentum",
+        "formula": (
+            "ε_i(t) = r_i(t) − β_i(t)·r_m(t);   "
+            "score(t, i) = ⟨ ε_i(τ) / σ̂_ε,i(τ) ⟩  for  τ ∈ [t − skip − lookback, t − skip]"
+        ),
         "summary": (
-            "Frazzini & Pedersen (2014, 'Betting Against Beta'); Baker, "
-            "Bradley & Wurgler (2011). The low-volatility anomaly: hold the "
-            "lowest-realized-vol names, short the highest. Score is negative "
-            "rolling-window standard deviation of daily returns."
+            "Blitz, Huij & Martens (2011, JFE). Regress each stock's daily "
+            "returns on the equal-weight benchmark over a rolling window, "
+            "standardize the residuals by their own rolling std, then take "
+            "the mean of those standardized residuals over a 12-1-style "
+            "lookback (skipping the most recent month). Same direction as "
+            "vanilla momentum but with market beta residualized away — "
+            "survives the 2009-style momentum crash that punishes raw 12-1."
         ),
         "params": [
-            {"name": "window", "type": "int", "default": 126, "min": 21, "max": 252, "step": 21,
-             "help": "Rolling window for realized volatility (126 ≈ 6mo)."},
+            {"name": "beta_window", "type": "int", "default": 252, "min": 63, "max": 504, "step": 21,
+             "help": "Rolling window for market-beta regression (252 ≈ 1y)."},
+            {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 252, "step": 21,
+             "help": "Window for averaging standardized residuals (126 ≈ 6mo)."},
+            {"name": "skip_days", "type": "int", "default": 21, "min": 0, "max": 63, "step": 1,
+             "help": "Skip the most recent N days to avoid short-term reversal contamination."},
         ],
         "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
     },

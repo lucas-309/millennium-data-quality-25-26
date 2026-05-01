@@ -242,6 +242,75 @@ class ShortTermReversalStrategy(SignalStrategy):
         return -(dataset.prices.div(dataset.prices.shift(self.lookback_days)) - 1.0)
 
 
+class ResidualMomentumStrategy(SignalStrategy):
+    name = "Residual Momentum"
+    motivation = "Buy names with strong recent returns *after* stripping out exposure to the market."
+    economic_rationale = (
+        "Blitz, Huij & Martens (2011): vanilla 12-1 momentum is partly a "
+        "compensation for high-beta exposure. Regressing each stock's daily "
+        "returns on the market and ranking by the recent *residual* mean "
+        "isolates the slow-information-diffusion channel and decorrelates "
+        "the signal from broad-market beta."
+    )
+    why_it_works = (
+        "Higher Sharpe than raw momentum across decades; smaller drawdowns "
+        "during momentum crashes (e.g. March 2009) because market-beta "
+        "exposure has been residualized away."
+    )
+    why_it_fails = (
+        "Estimation error in rolling beta on names with thin history; "
+        "structural breaks in factor structure (e.g. the COVID drawdown "
+        "regime) can leave residuals contaminated until the window rolls."
+    )
+
+    def __init__(
+        self,
+        beta_window: int = 252,
+        lookback_days: int = 126,
+        skip_days: int = 21,
+    ):
+        self.beta_window = beta_window
+        self.lookback_days = lookback_days
+        self.skip_days = skip_days
+
+    def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
+        returns = dataset.returns
+        market = dataset.benchmark_returns
+        if returns is None or returns.empty or market is None or market.empty:
+            return pd.DataFrame(index=returns.index, columns=returns.columns, dtype=float)
+
+        # Vectorized rolling beta: cov_i(t) = rolling_cov(r_i, r_m); var_m(t) = rolling_var(r_m)
+        # Pandas: df.rolling(W).cov(series) returns a DataFrame where each
+        # column is the rolling covariance of that column with the series.
+        rolling_cov = returns.rolling(self.beta_window, min_periods=self.beta_window // 2).cov(market)
+        rolling_var = market.rolling(self.beta_window, min_periods=self.beta_window // 2).var()
+        beta = rolling_cov.div(rolling_var.replace(0, np.nan), axis=0)
+
+        # Residuals: r_i(t) − β_i(t) · r_m(t). Drop the drifting alpha
+        # intercept — for daily data over our window it's near-zero and
+        # introduces only noise.
+        expected = beta.mul(market, axis=0)
+        residuals = returns.subtract(expected)
+
+        # Standardize residuals by their own rolling std so high-vol names
+        # don't dominate the cross-section purely on noise (BHM normalize
+        # at the *signal* step, not the score step — same idea).
+        res_std = residuals.rolling(
+            self.beta_window, min_periods=self.beta_window // 2,
+        ).std().replace(0, np.nan)
+        standardized = residuals.div(res_std)
+
+        # 12-1 style signal — average standardized residual over the
+        # lookback window, skipping the most recent skip_days to avoid
+        # short-term reversal contamination.
+        score = (
+            standardized.shift(self.skip_days)
+            .rolling(self.lookback_days, min_periods=max(self.lookback_days // 2, 1))
+            .mean()
+        )
+        return score
+
+
 class LowVolatilityStrategy(SignalStrategy):
     name = "Low Volatility"
     motivation = "Hold the lowest-volatility names, exploiting the low-vol anomaly."
