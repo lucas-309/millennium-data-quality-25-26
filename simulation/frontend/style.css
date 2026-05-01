@@ -272,12 +272,13 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
   align-items: start;
 }
 .sidebar {
-  position: sticky;
-  top: 52px;                         /* flush against the 52px sticky topbar */
-  max-height: calc(100vh - 52px);
-  overflow-y: auto;
+  /* Sticky sidebar was leaving a black void below the panel as the main
+     column scrolled past on tall pages. Static positioning lets the
+     sidebar scroll out of view naturally — params are at the top, results
+     are below. Cleaner for stage scrolling than a half-empty pinned column. */
   align-self: start;
 }
+.app-split { align-items: start; }
 .sidebar .panel { border-color: var(--border); }
 .main-col {
   display: flex;
