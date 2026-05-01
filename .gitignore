@@ -18,3 +18,10 @@ sp500_universe.pkl
 .claude/
 data_quality_materials/
 .gstack/
+
+# Slide / research output dirs — generated artifacts, not source
+slide_assets/
+slide_ready_signal_graphs/
+five_signal_results/
+all_alpha_results/
+*.pdf

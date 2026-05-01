@@ -4,14 +4,28 @@
 
 ```
 millennium-data-quality-25-26/
-├── run_book.py                           # THE deliverable — 5-sleeve alpha book
+├── run_book.py                           # 5-sleeve alpha book (research deliverable)
 ├── research_main.py                      # Research pipeline CLI entry point
 ├── PROJECT_PLAN.md                       # Research workflow / presentation plan
 ├── PRESENTATION_NOTES.md                 # Notes for the research deck
-├── SESSION_NOTES.md                      # This session's arc, mistakes, improvements
+├── SESSION_NOTES.md                      # Session arc, mistakes, improvements
+├── fly.toml                              # Fly.io VM config for the backend
+├── Dockerfile                            # Backend image (Python 3.11)
+│
+├── simulation/                           # The live web simulator
+│   ├── backend/
+│   │   ├── server.py                     # ThreadingHTTPServer — /api/{status,catalog,simulate,…}
+│   │   └── simulator.py                  # STRATEGIES catalog, warmup + cache, run_simulation
+│   └── frontend/
+│       ├── index.html                    # Single-page shell
+│       ├── app.ts → app.js               # TypeScript app — params, plotly chart, code editor
+│       ├── style.css                     # Amber phosphor terminal aesthetic
+│       └── vercel.json                   # Static build + /api proxy to Fly
 │
 ├── backtester/
-│   ├── WhartonDataSource.parquet         # Local 165-ticker SP500 daily data (2000-2025)
+│   ├── WhartonDataSource4.parquet        # Live simulator's wharton source (~830 tickers)
+│   ├── financial_ratios.parquet          # WRDS ratios panel — used by Value Composite
+│   ├── surprise earning.csv              # SUE event panel — read lazily by PEAD
 │   ├── data_source.py                    # WhartonDataSource, YahooFinanceDataSource, PickleDataSource
 │   ├── research_data.py                  # ResearchDataset loader (prices, returns, volumes, events)
 │   ├── research_backtester.py            # Weight-based backtester, lag tables, event studies
@@ -36,11 +50,14 @@ millennium-data-quality-25-26/
 │   └── attribution.py                    # Factor attribution, Brinson, contribution ranking
 │
 ├── strategies/
-│   └── research_strategies.py            # 6 SignalStrategy classes for the research framework
-│                                         # (Small-Cap Tilt, Value Composite, Earnings Revision,
-│                                         #  Sector-Neutral Dividend Yield, Cross-Sectional
-│                                         #  Momentum, Low Volatility)
+│   └── research_strategies.py            # SignalStrategy classes used by both tracks:
+│                                         #   live simulator → CrossSectionalMomentumStrategy,
+│                                         #   ShortTermReversalStrategy, ValueCompositeStrategy
+│                                         #   (catalog wired in simulation/backend/simulator.py)
+│                                         #   research/run_book → also pulls Small-Cap Tilt,
+│                                         #   Sector-Neutral Dividend Yield, Low Volatility
 │
+
 ├── unit_tests/                           # 88 tests covering every module above
 │   ├── test_alpha_research.py
 │   ├── test_execution.py
@@ -62,6 +79,33 @@ millennium-data-quality-25-26/
 ```
 
 ## Architecture Overview
+
+### Live simulator — `simulation/`
+Two surfaces, one engine.
+
+`simulation/backend/server.py` is a ThreadingHTTPServer with five JSON
+endpoints: `/api/status`, `/api/catalog`, `/api/simulate`,
+`/api/universe/add`, and `/api/data*`. It serves the frontend statically
+when run locally and proxies through Vercel rewrites in production.
+
+`simulation/backend/simulator.py` holds the catalog (`STRATEGIES = […]`)
+that maps each user-visible strategy to a `SignalStrategy` subclass plus
+its tunable params and engine overrides. `warmup()` loads either the
+yfinance cache or the wharton parquet into a `ResearchDataset` and caches
+that in-process. The same `build_target_weights` + `run_weight_backtest`
+that the research track uses is what runs each request.
+
+The frontend (`simulation/frontend/app.ts`) is a single-file TypeScript
+app — no framework. Plotly for the charts, Prism for code highlighting,
+hand-rolled state machine for params. The "Engine code" panel is a
+`<textarea>` that lets the user edit the strategy class source live; the
+backend (`_compile_strategy_override`) execs the user's source in a
+sandbox namespace seeded with `pd`, `np`, `SignalStrategy`, and
+`ResearchDataset`, finds the new subclass, and runs it.
+
+Production runs on a Fly.io VM (shared-cpu-4x, 8GB) — wharton's
+parquet decode peaks at ~6GB during load. The frontend ships via
+Vercel from `main`.
 
 ### Data layer — `backtester/data_source.py` + `backtester/research_data.py`
 `WhartonDataSource` loads the local parquet, computes split-adjusted and
@@ -105,12 +149,26 @@ attribution, historical regime replays against 10 named drawdown windows
 2. Add a new class inheriting from `SignalStrategy` (see existing examples)
 3. Implement `generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame`
 4. Optionally override `normalize_scores` for sector-neutral handling
-5. Either include it in `build_default_strategy_suite()` for the research CLI
-   or import it directly in `run_book.py` as a new sleeve
 
 The strategy contract is simple: return a DataFrame with the same shape as
-`dataset.prices` where each cell is the cross-sectional score for that ticker
-on that date. Higher = more desirable.
+`dataset.prices` where each cell is the cross-sectional score for that
+ticker on that date. Higher = more desirable.
+
+### Wiring it into the research pipeline
+
+Include it in `build_default_strategy_suite()` for the research CLI, or
+import it directly in `run_book.py` as a new sleeve.
+
+### Wiring it into the live simulator
+
+Edit `simulation/backend/simulator.py` and append an entry to the
+`STRATEGIES` list with the strategy id, class, label, summary, formula,
+tunable params, and engine overrides. The frontend dynamically renders
+whatever the catalog returns — no frontend changes needed.
+
+For one-off experimentation, you can also edit any existing strategy's
+class source in the simulator's "Engine code" panel and click Run; the
+edited class runs through the same backtest engine.
 
 ## Running the Alpha Book
 
