@@ -115,10 +115,10 @@ class SmallCapTiltStrategy(SignalStrategy):
 
 class ValueCompositeStrategy(SignalStrategy):
     name = "Value Composite"
-    motivation = "Blend shareholder payout and earnings support into a slow-moving cross-sectional value score."
-    economic_rationale = "Stocks with stronger cash yield and earnings support can trade at persistent discounts to peers."
-    why_it_works = "Dividend yield, earnings yield, and a modest size tilt create a broader valuation signal than any single field alone."
-    why_it_fails = "Value can stay cheap for long periods and becomes crowded when macro leadership rotates sharply."
+    motivation = "Long the cheapest names by a Fama-French value composite (B/M, E/P, CF/P, D/P)."
+    economic_rationale = "Cross-sectional value spreads compensate investors for distress / multiple-mean-reversion risk."
+    why_it_works = "Composite of four price-yield ratios is more robust than any single ratio and matches the canonical Fama-French (1992, 2015) HML construction."
+    why_it_fails = "Value cycles are long; the factor can underperform for a decade (e.g. 2010-2020 growth dominance)."
     backtest_overrides = {
         "rebalance_frequency": "ME",
         "construction_method": "equal_weight",
@@ -127,30 +127,47 @@ class ValueCompositeStrategy(SignalStrategy):
     }
     combine_in_portfolio = False
 
-    def __init__(self, trailing_days: int = 252):
-        self.trailing_days = trailing_days
+    # Each ratio is already on a "yield-to-price" scale (higher = cheaper),
+    # so we can z-score and sum without any sign flipping. Order matters
+    # only insofar as `_cross_sectional_zscore` is applied per-ratio first.
+    RATIOS = ("bm", "ep", "cfp", "dy")
+
+    def __init__(self) -> None:
+        # Constructor takes no params: the composite is fully specified by
+        # the four ratios above, and the long/short quantiles live in the
+        # engine overrides. Keeping the signature empty also lets the live
+        # code editor accept edits without juggling kwargs.
+        pass
 
     def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
-        if dataset.dividends is None or dataset.dividends.empty or dataset.eps is None or dataset.eps.empty:
+        if not dataset.fundamentals:
+            # Source has no financial-ratio panel attached (yfinance, custom).
+            # Returning an all-NaN frame causes the backtester to skip every
+            # rebalance instead of raising — the run still completes with a
+            # flat curve and the user can switch sources.
             return pd.DataFrame(index=dataset.prices.index, columns=dataset.prices.columns, dtype=float)
 
-        trailing_dividends = dataset.dividends.rolling(
-            self.trailing_days,
-            min_periods=max(self.trailing_days // 4, 1),
-        ).sum()
-        dividend_yield = trailing_dividends.div(dataset.prices.replace(0, np.nan))
-        earnings_yield = dataset.eps.div(dataset.prices.replace(0, np.nan))
+        z_frames: list[pd.DataFrame] = []
+        for ratio in self.RATIOS:
+            panel = dataset.fundamentals.get(ratio)
+            if panel is None or panel.empty:
+                continue
+            aligned = panel.reindex(index=dataset.prices.index, columns=dataset.prices.columns)
+            z_frames.append(_cross_sectional_zscore(aligned))
+        if not z_frames:
+            return pd.DataFrame(index=dataset.prices.index, columns=dataset.prices.columns, dtype=float)
 
-        if dataset.market_caps is None or dataset.market_caps.empty:
-            size_component = pd.DataFrame(0.0, index=dataset.prices.index, columns=dataset.prices.columns)
-        else:
-            size_component = -np.log(dataset.market_caps.replace(0, np.nan))
-
-        return (
-            _cross_sectional_zscore(dividend_yield)
-            + _cross_sectional_zscore(earnings_yield)
-            + _cross_sectional_zscore(size_component)
-        )
+        # NaN-aware sum: a (date, ticker) cell with no ratios at all stays
+        # NaN (so the backtester drops it from the cross-section), but a cell
+        # missing one of four ratios still gets scored from the others. Plain
+        # DataFrame.add with fill_value=0 mishandles the all-NaN case by
+        # turning it into a numerical zero, which then competes for the top
+        # quantile alongside actually-cheap names.
+        stacked = np.stack([f.to_numpy(dtype=float) for f in z_frames], axis=0)
+        summed = np.nansum(stacked, axis=0)
+        all_nan = np.isnan(stacked).all(axis=0)
+        summed[all_nan] = np.nan
+        return pd.DataFrame(summed, index=z_frames[0].index, columns=z_frames[0].columns)
 
 
 class EarningsRevisionStrategy(SignalStrategy):
