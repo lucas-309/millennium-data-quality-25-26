@@ -202,24 +202,6 @@ interface SimRequest {
   data_source?: string;
 }
 
-interface SignalRow {
-  ticker: string;
-  score: number;
-  rank: number;
-  last_price: number | null;
-}
-
-interface SignalPreview {
-  as_of: string | null;
-  longs: SignalRow[];
-  shorts: SignalRow[];
-  include_shorts: boolean;
-  strategy_id: string;
-  strategy_label?: string;
-  n_universe: number;
-  top_n?: number;
-}
-
 interface PinnedRun {
   id: string;
   label: string;          // user-editable; auto-generated from strategy + params
@@ -459,7 +441,35 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       btn.addEventListener("click", () => selectStrategy(s.id));
       nav.appendChild(btn);
     });
+    // Re-evaluate the chevron overflow state once the new tabs paint.
+    requestAnimationFrame(updateTabChevrons);
   }
+
+  // ---- Strategy-tabs scroll affordance ----
+  function updateTabChevrons(): void {
+    const wrap = document.getElementById("strategy-tabs-wrap");
+    const nav  = document.getElementById("strategy-tabs");
+    if (!wrap || !nav) return;
+    const max = nav.scrollWidth - nav.clientWidth;
+    const x   = nav.scrollLeft;
+    const EPS = 2; // sub-pixel tolerance
+    wrap.classList.toggle("can-scroll-left",  x > EPS);
+    wrap.classList.toggle("can-scroll-right", x < max - EPS);
+  }
+  (() => {
+    const nav = document.getElementById("strategy-tabs");
+    const left  = document.getElementById("tabs-chevron-left");
+    const right = document.getElementById("tabs-chevron-right");
+    if (!nav) return;
+    const scrollByStep = (dir: 1 | -1): void => {
+      // 78% of the visible width — keeps a tab or two of context after the jump.
+      nav.scrollBy({ left: dir * Math.round(nav.clientWidth * 0.78), behavior: "smooth" });
+    };
+    left?.addEventListener("click",  () => scrollByStep(-1));
+    right?.addEventListener("click", () => scrollByStep(1));
+    nav.addEventListener("scroll", updateTabChevrons, { passive: true });
+    window.addEventListener("resize", updateTabChevrons);
+  })();
   function renderStrategyHeader(s: Strategy): void {
     const host = $("strategy-summary");
     const formula = (s.formula || "").trim();
@@ -852,9 +862,6 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       lastRender.simPayload = body as unknown as SimRequest;
       renderResults(data);
       setStatus(`ready · last run ${(elapsed / 1000).toFixed(2)}s`, "ready");
-      // Fire-and-forget signal preview — non-blocking, errors are logged
-      // not surfaced (the main result already landed).
-      fetchSignalPreview(p).catch((e) => console.error("signal_preview", e));
     } catch (exc) {
       console.error(exc);
       const msg = exc instanceof Error ? exc.message : String(exc);
@@ -1237,87 +1244,6 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       );
       host.appendChild(chip);
     }
-  }
-
-  async function fetchSignalPreview(p: RunPayload): Promise<void> {
-    if (!state.currentStrategy) return;
-    const body = {
-      strategy_id: state.currentStrategy.id,
-      strategy_params: p.strategyParams,
-      engine_overrides: p.engineOverrides,
-      data_source: state.dataSource,
-      top_n: 10,
-    };
-    try {
-      const res = await fetch("/api/signal/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        renderSignalPreview(null);
-        return;
-      }
-      const data = (await res.json()) as SignalPreview;
-      renderSignalPreview(data);
-    } catch (_) {
-      renderSignalPreview(null);
-    }
-  }
-
-  function renderSignalPreview(data: SignalPreview | null): void {
-    const host = document.getElementById("signal-preview");
-    const sub = document.getElementById("signal-sub");
-    if (!host) return;
-    if (!data || (!data.longs.length && !data.shorts.length)) {
-      host.innerHTML = `<div class="signal-empty">No signal data for the latest date.</div>`;
-      return;
-    }
-    if (sub) {
-      const dateStr = data.as_of || "—";
-      const universe = data.n_universe ? `${data.n_universe} names` : "";
-      sub.textContent = `as of ${dateStr}${universe ? " · " + universe : ""}`;
-    }
-    const fmtScore = (s: number): string =>
-      Math.abs(s) >= 100 ? s.toFixed(1)
-      : Math.abs(s) >= 10 ? s.toFixed(2)
-      : s.toFixed(4);
-    const fmtPrice = (p: number | null): string =>
-      p == null ? "—" : `$${p >= 1000 ? p.toFixed(0) : p.toFixed(2)}`;
-    const longRows = data.longs
-      .map(
-        (r) => `
-        <tr>
-          <td class="sp-rank">${r.rank}</td>
-          <td class="sp-tic">${escapeHtml(r.ticker)}</td>
-          <td class="sp-score gain">${fmtScore(r.score)}</td>
-          <td class="sp-px">${fmtPrice(r.last_price)}</td>
-        </tr>`,
-      )
-      .join("");
-    const shortRows = data.shorts
-      .map(
-        (r) => `
-        <tr>
-          <td class="sp-rank">${r.rank}</td>
-          <td class="sp-tic">${escapeHtml(r.ticker)}</td>
-          <td class="sp-score loss">${fmtScore(r.score)}</td>
-          <td class="sp-px">${fmtPrice(r.last_price)}</td>
-        </tr>`,
-      )
-      .join("");
-    const longsCol = `
-      <div class="sp-col sp-longs">
-        <div class="sp-col-head">▎ TOP ${data.longs.length} LONGS</div>
-        <table class="sp-table"><tbody>${longRows}</tbody></table>
-      </div>`;
-    const shortsCol = data.include_shorts && data.shorts.length
-      ? `<div class="sp-col sp-shorts">
-           <div class="sp-col-head">▎ BOTTOM ${data.shorts.length} SHORTS</div>
-           <table class="sp-table"><tbody>${shortRows}</tbody></table>
-         </div>`
-      : "";
-    host.innerHTML = longsCol + shortsCol;
   }
 
   function renderMonthlyHeatmap(monthly: MonthlyReturn[]): void {

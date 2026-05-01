@@ -12,7 +12,11 @@
 
   <header class="topbar">
     <div class="brand">SIM<em>·</em>BACKTESTER</div>
-    <nav class="strategy-tabs" id="strategy-tabs"></nav>
+    <div class="strategy-tabs-wrap" id="strategy-tabs-wrap">
+      <nav class="strategy-tabs" id="strategy-tabs"></nav>
+      <button type="button" class="tabs-chevron tabs-chevron-left"  id="tabs-chevron-left"  aria-label="scroll strategies left"  tabindex="-1">◂</button>
+      <button type="button" class="tabs-chevron tabs-chevron-right" id="tabs-chevron-right" aria-label="scroll strategies right" tabindex="-1">▸</button>
+    </div>
     <div class="horizon">
       <input id="start" type="date" value="2005-01-01" />
       <span>→</span>
@@ -69,7 +73,7 @@
       <div class="main-col">
         <div class="panel code-panel">
           <header class="panel-head">
-            <h3>Live code</h3>
+            <h3>Engine code</h3>
             <span class="panel-sub" id="code-path">strategies/research_strategies.py + backtester/research_backtester.py</span>
           </header>
           <textarea id="code-editor" class="code-editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
@@ -80,16 +84,6 @@
           <div class="m-card"><div class="m-label">Ann. return</div><div class="m-value" id="m-return">—</div><div class="m-sub" id="m-return-sub"></div></div>
           <div class="m-card"><div class="m-label">Max drawdown</div><div class="m-value" id="m-dd">—</div><div class="m-sub" id="m-dd-sub"></div></div>
           <div class="m-card"><div class="m-label">T-cost drag / yr</div><div class="m-value" id="m-tcost">—</div><div class="m-sub" id="m-tcost-sub"></div></div>
-        </div>
-
-        <div class="panel">
-          <header class="panel-head">
-            <h3>Signal preview</h3>
-            <span class="panel-sub" id="signal-sub">strategy scores at the latest available date</span>
-          </header>
-          <div class="signal-preview" id="signal-preview">
-            <div class="signal-empty">Run a backtest to see the live signal ranking.</div>
-          </div>
         </div>
 
         <div class="panel">
