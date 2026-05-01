@@ -79,8 +79,15 @@
           <header class="panel-head">
             <h3>Live code</h3>
             <span class="panel-sub" id="code-path">strategies/research_strategies.py + backtester/research_backtester.py</span>
+            <div class="code-edit-toolbar">
+              <span class="code-edit-status" id="code-edit-status"></span>
+              <button type="button" id="code-edit-toggle" class="code-edit-btn">Edit</button>
+              <button type="button" id="code-edit-run" class="code-edit-btn primary" hidden>Run edited</button>
+              <button type="button" id="code-edit-revert" class="code-edit-btn" hidden>Revert</button>
+            </div>
           </header>
           <pre class="code-block"><code id="code-live" class="language-python"></code></pre>
+          <textarea id="code-editor" class="code-editor" hidden spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
         </div>
 
         <div class="metrics-strip">
@@ -88,6 +95,10 @@
           <div class="m-card"><div class="m-label">Ann. return</div><div class="m-value" id="m-return">—</div><div class="m-sub" id="m-return-sub"></div></div>
           <div class="m-card"><div class="m-label">Max drawdown</div><div class="m-value" id="m-dd">—</div><div class="m-sub" id="m-dd-sub"></div></div>
           <div class="m-card"><div class="m-label">T-cost drag / yr</div><div class="m-value" id="m-tcost">—</div><div class="m-sub" id="m-tcost-sub"></div></div>
+          <div class="m-card secondary"><div class="m-label">Sortino</div><div class="m-value" id="m-sortino">—</div><div class="m-sub" id="m-sortino-sub"></div></div>
+          <div class="m-card secondary"><div class="m-label">Calmar</div><div class="m-value" id="m-calmar">—</div><div class="m-sub" id="m-calmar-sub"></div></div>
+          <div class="m-card secondary"><div class="m-label">Info ratio</div><div class="m-value" id="m-ir">—</div><div class="m-sub" id="m-ir-sub"></div></div>
+          <div class="m-card secondary"><div class="m-label">Hit rate</div><div class="m-value" id="m-hit">—</div><div class="m-sub" id="m-hit-sub"></div></div>
         </div>
 
         <div class="panel">
@@ -120,7 +131,6 @@
           <div class="audit-body">
             <div class="audit-stats" id="audit-stats"></div>
             <div id="chart-audit" class="audit-chart"></div>
-            <p class="audit-note" id="audit-note"></p>
           </div>
         </div>
 
@@ -134,6 +144,14 @@
               <input id="ticker-search" class="search" placeholder="Filter tickers…" />
               <div class="table-wrap">
                 <table class="ticker-table" id="ticker-table">
+                  <colgroup>
+                    <col class="col-ticker" />
+                    <col class="col-name" />
+                    <col class="col-sector" />
+                    <col class="col-start" />
+                    <col class="col-end" />
+                    <col class="col-ret" />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th>Ticker</th><th>Name</th><th>Sector</th>

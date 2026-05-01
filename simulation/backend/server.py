@@ -16,7 +16,7 @@ import threading
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
@@ -43,6 +43,38 @@ def _kick_warmup_async(source: str = None) -> None:
             traceback.print_exc()
 
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _query_source(parsed) -> str | None:
+    values = parse_qs(parsed.query).get("source", [])
+    return values[0] if values else None
+
+
+def _validate_source(source: str | None) -> None:
+    if source and source not in simulator.SUPPORTED_SOURCES:
+        raise ValueError(f"unknown data source: {source!r}")
+
+
+def _prepare_warmup(source: str | None) -> None:
+    if not source:
+        return
+    with simulator._LOCK:
+        current = simulator._STATE.get("data_source")
+        if current == source and (simulator._STATE["ready"] or simulator._STATE["loading"]):
+            return
+        simulator._STATE["ready"] = False
+        simulator._STATE["loading"] = False
+        simulator._STATE["dataset"] = None
+        simulator._STATE["benchmark"] = None
+        simulator._STATE["date_min"] = None
+        simulator._STATE["date_max"] = None
+        simulator._STATE["tickers"] = 0
+        simulator._STATE["universe_label"] = None
+        simulator._STATE["error"] = None
+        simulator._STATE["message"] = f"loading {source} dataset"
+        simulator._STATE["data_source"] = source
+        simulator._STATE["load_token"] = int(simulator._STATE.get("load_token", 0)) + 1
+    simulator._SIM_CACHE.clear()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -81,7 +113,15 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/status":
-            self._send_json(simulator.status())
+            requested_source = _query_source(parsed)
+            try:
+                _validate_source(requested_source)
+                if requested_source:
+                    _prepare_warmup(requested_source)
+                    _kick_warmup_async(source=requested_source)
+                self._send_json(simulator.status(source=requested_source))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
             return
 
         if path == "/api/catalog":
@@ -89,18 +129,25 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/data":
+            requested_source = _query_source(parsed)
             try:
-                self._send_json(simulator.data_overview())
+                _validate_source(requested_source)
+                self._send_json(simulator.data_overview(source=requested_source))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
             except RuntimeError as exc:
                 self._send_json({"error": str(exc)}, status=409)
             return
 
         if path.startswith("/api/data/ticker/"):
+            requested_source = _query_source(parsed)
             tic = path.split("/api/data/ticker/", 1)[1]
             try:
-                self._send_json(simulator.ticker_detail(tic))
+                _validate_source(requested_source)
+                self._send_json(simulator.ticker_detail(tic, source=requested_source))
             except ValueError as exc:
-                self._send_json({"error": str(exc)}, status=404)
+                status = 400 if str(exc).startswith("unknown data source") else 404
+                self._send_json({"error": str(exc)}, status=status)
             except RuntimeError as exc:
                 self._send_json({"error": str(exc)}, status=409)
             return
@@ -131,22 +178,13 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/warmup":
             requested_source = body.get("source") if isinstance(body, dict) else None
-            current = simulator.status().get("data_source")
-            # Switching to a different source needs to drop the loaded
-            # dataset so warmup actually reloads. simulator.warmup is a
-            # no-op when ready and the source matches, so we explicitly
-            # invalidate _STATE here when the user picks a different one.
-            if requested_source and requested_source != current:
-                with simulator._LOCK:
-                    simulator._STATE["ready"] = False
-                    simulator._STATE["loading"] = False
-                    simulator._STATE["dataset"] = None
-                    simulator._STATE["benchmark"] = None
-                    simulator._STATE["error"] = None
-                    simulator._STATE["data_source"] = requested_source
-                simulator._SIM_CACHE.clear()
-            _kick_warmup_async(source=requested_source)
-            self._send_json(simulator.status())
+            try:
+                _validate_source(requested_source)
+                _prepare_warmup(requested_source)
+                _kick_warmup_async(source=requested_source)
+                self._send_json(simulator.status(source=requested_source))
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
             return
 
         if path == "/api/universe/add":

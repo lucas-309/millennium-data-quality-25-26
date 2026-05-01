@@ -16,9 +16,10 @@ import hashlib
 import inspect
 import json
 import threading
+import time
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -45,6 +46,7 @@ _STATE: Dict[str, Any] = {
     "date_min": None, "date_max": None, "tickers": 0,
     "universe_label": None,
     "data_source": DEFAULT_SOURCE,
+    "load_token": 0,
 }
 _SIM_CACHE: Dict[str, Dict[str, Any]] = {}
 
@@ -83,12 +85,19 @@ def _clean_strategy_source(src: str) -> str:
 # ---------------------------------------------------------------------------
 # Catalog — declarative, each field mirrors an actual line of source
 # ---------------------------------------------------------------------------
+_SHORT_QUANTILE_OVERRIDE = {
+    "name": "short_quantile", "type": "float", "default": 0.0,
+    "min": 0.0, "max": 0.40, "step": 0.05,
+    "help": "Bottom fraction sold short (0 = long-only, >0 turns the sleeve into long-short).",
+}
+
 STRATEGIES = [
     {
         "id": "momentum",
         "cls": rs.CrossSectionalMomentumStrategy,
         "cls_name": "CrossSectionalMomentumStrategy",
         "label": "Momentum",
+        "formula": "score(t, i) = ln( P[t − skip, i] / P[t − lookback, i] )",
         "summary": "Rank stocks by their return from (today − lookback_days) to (today − skip_days); long the top quantile, optionally short the bottom.",
         "params": [
             {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 504, "step": 21,
@@ -96,22 +105,69 @@ STRATEGIES = [
             {"name": "skip_days",     "type": "int", "default": 21,  "min": 0,  "max": 63,  "step": 1,
              "help": "Skip last N days to drop short-term reversal (21 ≈ 1mo)."},
         ],
-        "engine_overrides": [
-            {"name": "short_quantile", "type": "float", "default": 0.0, "min": 0.0, "max": 0.40, "step": 0.05,
-             "help": "Bottom fraction sold short (0 = long-only, long-short becomes dollar-neutral)."},
-        ],
+        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
     },
     {
         "id": "mean_reversion",
         "cls": rs.ShortTermReversalStrategy,
         "cls_name": "ShortTermReversalStrategy",
         "label": "Mean Reversion",
+        "formula": "score(t, i) = − ln( P[t, i] / P[t − lookback, i] )",
         "summary": "Score stocks by their negated recent return; long the biggest recent losers, expecting a bounce.",
         "params": [
             {"name": "lookback_days", "type": "int", "default": 5, "min": 1, "max": 21, "step": 1,
              "help": "Recent-return window; biggest losers rank highest."},
         ],
-        "engine_overrides": [],
+        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
+    },
+    {
+        "id": "moving_average",
+        "cls": rs.MovingAverageCrossoverStrategy,
+        "cls_name": "MovingAverageCrossoverStrategy",
+        "label": "Moving Average",
+        "formula": "score(t, i) = EMA_short(P, t, i) / EMA_long(P, t, i) − 1",
+        "summary": "Cross-sectional EMA crossover — score = (short EMA − long EMA) / long EMA. Long names in the strongest uptrend, short the weakest.",
+        "params": [
+            {"name": "short_window", "type": "int", "default": 50,  "min": 5,  "max": 100, "step": 5,
+             "help": "Span of the fast EMA."},
+            {"name": "long_window",  "type": "int", "default": 200, "min": 50, "max": 400, "step": 10,
+             "help": "Span of the slow EMA."},
+        ],
+        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
+    },
+    {
+        "id": "customer_supplier_momentum",
+        "cls": rs.CustomerSupplierMomentumStrategy,
+        "cls_name": "CustomerSupplierMomentumStrategy",
+        "label": "Customer-Supplier Momentum",
+        "formula": "score(t, i) = mean over j ∈ customers(i) of ln( P[t, j] / P[t − lookback, j] )",
+        "summary": "Cohen & Frazzini (2008). Long suppliers whose major customers had strong recent returns; short those tied to weak customers. Uses a curated supplier→customer map.",
+        "params": [
+            {"name": "customer_lookback_days", "type": "int", "default": 21, "min": 5, "max": 63, "step": 1,
+             "help": "Recent-return window on the customer side (21 ≈ 1mo)."},
+            {"name": "min_customers", "type": "int", "default": 1, "min": 1, "max": 5, "step": 1,
+             "help": "Minimum customers with valid returns required to score a supplier."},
+        ],
+        "engine_overrides": [
+            {**_SHORT_QUANTILE_OVERRIDE, "default": 0.20,
+             "help": "Bottom fraction (suppliers tied to weak customers) sold short."},
+        ],
+    },
+    {
+        "id": "pead",
+        "cls": rs.PEADStrategy,
+        "cls_name": "PEADStrategy",
+        "label": "Post-Earnings Announcement Drift",
+        "formula": "score(t, i) = SUE(announce(i))   for t ∈ [announce(i), announce(i) + holding]",
+        "summary": "Bernard & Thomas (1989). On each ticker's announcement date set score = SUE; hold for `holding_days`. Long top decile, short bottom decile.",
+        "params": [
+            {"name": "holding_days", "type": "int", "default": 60, "min": 5, "max": 90, "step": 5,
+             "help": "Trading days to keep the SUE signal active after the announcement."},
+        ],
+        "engine_overrides": [
+            {**_SHORT_QUANTILE_OVERRIDE, "default": 0.10,
+             "help": "Bottom-decile (negative SUE) names sold short — recovers the canonical long-short PEAD sleeve."},
+        ],
     },
 ]
 STRATEGY_BY_ID = {s["id"]: s for s in STRATEGIES}
@@ -149,6 +205,15 @@ FIXED_ENGINE = {
 # ---------------------------------------------------------------------------
 # Warmup — load the chosen data source into a ResearchDataset
 # ---------------------------------------------------------------------------
+def _normalise_source(source: str = None) -> str:
+    if source is None:
+        source = _STATE.get("data_source") or DEFAULT_SOURCE
+    source = str(source).strip().lower()
+    if source not in SUPPORTED_SOURCES:
+        raise ValueError(f"unknown data source: {source!r}")
+    return source
+
+
 def _normalize_wharton_columns(panel):
     """Wharton/Compustat tickers use dot notation (BRK.B, BF.B); the rest of
     the simulator (and the frontend) speaks dash notation (BRK-B). Rename
@@ -198,16 +263,15 @@ def _load_wharton_dataset(start: str, end: str) -> ResearchDataset:
 def warmup(start: str = "2005-01-01", end: str = None, source: str = None) -> None:
     if end is None:
         end = date.today().strftime("%Y-%m-%d")
-    if source is None:
-        source = _STATE.get("data_source") or DEFAULT_SOURCE
-    if source not in SUPPORTED_SOURCES:
-        raise ValueError(f"unknown data source: {source!r}")
+    source = _normalise_source(source)
     with _LOCK:
-        if _STATE["loading"]:
+        if _STATE["loading"] and _STATE.get("data_source") == source:
             return
         # If the requested source matches the already-loaded one, nothing to do.
         if _STATE["ready"] and _STATE.get("data_source") == source:
             return
+        token = int(_STATE.get("load_token", 0)) + 1
+        _STATE["load_token"] = token
         _STATE["loading"] = True
         _STATE["ready"] = False
         _STATE["data_source"] = source
@@ -238,6 +302,8 @@ def warmup(start: str = "2005-01-01", end: str = None, source: str = None) -> No
         # different universe → identical request would otherwise stale-hit).
         _SIM_CACHE.clear()
         with _LOCK:
+            if token != _STATE.get("load_token") or _STATE.get("data_source") != source:
+                return
             _STATE.update({
                 "ready": True, "loading": False, "message": "ready",
                 "dataset": dataset, "benchmark": dataset.benchmark_returns,
@@ -249,15 +315,39 @@ def warmup(start: str = "2005-01-01", end: str = None, source: str = None) -> No
             })
     except Exception as exc:
         with _LOCK:
+            if token != _STATE.get("load_token") or _STATE.get("data_source") != source:
+                return
             _STATE["loading"] = False
             _STATE["error"] = str(exc)
             _STATE["message"] = f"error: {exc}"
         raise
 
 
-def status() -> Dict[str, Any]:
+def ensure_ready(source: str = None, timeout: float = 120.0) -> None:
+    """Block until the requested data source is loaded on this worker."""
+    source = _normalise_source(source)
+    deadline = time.monotonic() + timeout
+    while True:
+        with _LOCK:
+            ready = _STATE["ready"] and _STATE.get("data_source") == source
+            loading = _STATE["loading"] and _STATE.get("data_source") == source
+            error = _STATE["error"] if _STATE.get("data_source") == source else None
+        if ready:
+            return
+        if error and not loading:
+            raise RuntimeError(error)
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"timed out loading {source} dataset")
+        if loading:
+            time.sleep(0.25)
+            continue
+        warmup(source=source)
+
+
+def status(source: str = None) -> Dict[str, Any]:
+    requested_source = _normalise_source(source) if source else None
     with _LOCK:
-        return {
+        payload = {
             "ready": _STATE["ready"], "loading": _STATE["loading"],
             "message": _STATE["message"], "error": _STATE["error"],
             "date_min": _STATE["date_min"], "date_max": _STATE["date_max"],
@@ -266,6 +356,17 @@ def status() -> Dict[str, Any]:
             "data_source": _STATE.get("data_source", DEFAULT_SOURCE),
             "available_sources": list(SUPPORTED_SOURCES),
         }
+    if requested_source and payload["data_source"] != requested_source:
+        payload["ready"] = False
+        payload["loading"] = True
+        payload["message"] = f"loading {requested_source} dataset"
+        payload["error"] = None
+        payload["date_min"] = None
+        payload["date_max"] = None
+        payload["tickers"] = 0
+        payload["universe_label"] = None
+        payload["data_source"] = requested_source
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +381,7 @@ def catalog() -> Dict[str, Any]:
             "label": entry["label"],
             "cls_name": entry["cls_name"],
             "summary": entry["summary"],
+            "formula": entry.get("formula", ""),
             "params": entry["params"],
             "engine_overrides": entry.get("engine_overrides", []),
             "source": src,
@@ -301,22 +403,66 @@ def _cache_key(payload: Dict[str, Any]) -> str:
     return hashlib.md5(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _metrics(returns: pd.Series) -> Dict[str, float]:
+def _metrics(returns: pd.Series, benchmark: Optional[pd.Series] = None) -> Dict[str, float]:
     clean = returns.dropna()
     if len(clean) < 2:
         return {}
     cum = (1 + clean).cumprod()
-    ann_ret = cum.iloc[-1] ** (252 / len(clean)) - 1
-    std = clean.std(ddof=0)
-    sharpe = clean.mean() / std * np.sqrt(252) if std > 0 else 0.0
-    dd = (cum / cum.cummax() - 1).min()
-    return {
-        "annualized_return": float(ann_ret),
-        "annualized_volatility": float(std * np.sqrt(252)),
-        "sharpe": float(sharpe),
-        "max_drawdown": float(dd),
+    ann_ret = float(cum.iloc[-1] ** (252 / len(clean)) - 1)
+    std = float(clean.std(ddof=0))
+    ann_vol = float(std * np.sqrt(252))
+    sharpe = float(clean.mean() / std * np.sqrt(252)) if std > 0 else 0.0
+    dd = float((cum / cum.cummax() - 1).min())
+
+    # Sortino — only penalize downside deviation. Treat zero-only-positives
+    # as infinite Sortino by capping at the Sharpe value (shouldn't happen
+    # on a real strategy but guards against div-by-zero).
+    downside = clean[clean < 0]
+    downside_std = float(downside.std(ddof=0)) if len(downside) > 1 else 0.0
+    sortino = float(clean.mean() / downside_std * np.sqrt(252)) if downside_std > 0 else 0.0
+
+    # Calmar — annualized return / abs(max drawdown). Undefined when
+    # drawdown is exactly zero; report None rather than infinity.
+    calmar = float(ann_ret / abs(dd)) if dd < 0 else None
+
+    # Profit factor — sum of positive returns / abs(sum of negatives)
+    pos_sum = float(clean[clean > 0].sum())
+    neg_sum = float(abs(clean[clean < 0].sum()))
+    profit_factor = float(pos_sum / neg_sum) if neg_sum > 0 else None
+
+    out: Dict[str, Any] = {
+        "annualized_return": ann_ret,
+        "annualized_volatility": ann_vol,
+        "sharpe": sharpe,
+        "max_drawdown": dd,
         "win_rate": float((clean > 0).mean()),
+        "hit_rate": float((clean > 0).mean()),       # alias — quants prefer "hit rate"
+        "sortino": sortino,
+        "calmar": calmar,
+        "profit_factor": profit_factor,
     }
+
+    # Benchmark-relative — Information Ratio + Beta. Only meaningful when
+    # we actually have an aligned benchmark series.
+    if benchmark is not None:
+        aligned = pd.concat([clean, benchmark], axis=1, join="inner").dropna()
+        if len(aligned) >= 2:
+            aligned.columns = ["s", "b"]
+            active = aligned["s"] - aligned["b"]
+            active_std = float(active.std(ddof=0))
+            info_ratio = float(active.mean() / active_std * np.sqrt(252)) if active_std > 0 else 0.0
+            bench_var = float(aligned["b"].var(ddof=0))
+            beta = float(aligned[["s", "b"]].cov().iat[0, 1] / bench_var) if bench_var > 0 else 0.0
+            out["info_ratio"] = info_ratio
+            out["beta"] = beta
+        else:
+            out["info_ratio"] = None
+            out["beta"] = None
+    else:
+        out["info_ratio"] = None
+        out["beta"] = None
+
+    return out
 
 
 def _normalise_tickers(raw) -> List[str]:
@@ -399,7 +545,68 @@ def add_tickers_to_universe(tickers: List[str]) -> Dict[str, Any]:
     }
 
 
+_MAX_OVERRIDE_SIZE = 64 * 1024  # 64 KB cap on user-edited source — keeps exec() bounded.
+
+
+def _compile_strategy_override(source: str, fallback_cls):
+    """Compile a user-edited SignalStrategy class definition and return the
+    resulting class. Re-executes only the class body — module-level imports
+    are pre-populated in the namespace so the user doesn't have to repeat
+    them. Falls back to ``fallback_cls`` on parse errors with a helpful
+    error message.
+    """
+    if not isinstance(source, str):
+        raise ValueError("strategy_source_override must be a string")
+    if len(source) > _MAX_OVERRIDE_SIZE:
+        raise ValueError(
+            f"strategy_source_override too large ({len(source)} bytes; max {_MAX_OVERRIDE_SIZE})"
+        )
+    # Strip ANY 'from ... import' / 'import' lines that would re-import the
+    # module — the namespace already has everything they need, and re-imports
+    # can shadow our SignalStrategy ABC, which breaks subclass detection.
+    namespace: Dict[str, Any] = {
+        "__builtins__": __builtins__,
+        "pd": pd, "np": np,
+        "pandas": pd, "numpy": np,
+        "ResearchDataset": ResearchDataset,
+    }
+    # Re-export every name from research_strategies so the user can call
+    # _cross_sectional_zscore, reference SignalStrategy, etc.
+    from strategies import research_strategies as _rs_mod
+    for attr in dir(_rs_mod):
+        if not attr.startswith("_") or attr == "_cross_sectional_zscore" or attr == "_sector_neutral_zscore":
+            namespace.setdefault(attr, getattr(_rs_mod, attr))
+    namespace["SignalStrategy"] = _rs_mod.SignalStrategy
+    try:
+        compiled = compile(source, "<live-edit>", "exec")
+        exec(compiled, namespace)
+    except SyntaxError as exc:
+        raise ValueError(f"syntax error in edited code (line {exc.lineno}): {exc.msg}") from exc
+    except Exception as exc:
+        raise ValueError(f"error executing edited code: {exc}") from exc
+    # Find the SignalStrategy subclass the user defined (skip the imported
+    # ABC itself, and skip the fallback class which is also in the namespace).
+    candidates = [
+        v for v in namespace.values()
+        if isinstance(v, type)
+        and issubclass(v, _rs_mod.SignalStrategy)
+        and v is not _rs_mod.SignalStrategy
+        and v is not fallback_cls
+    ]
+    if not candidates:
+        raise ValueError(
+            "edited code did not define a new SignalStrategy subclass. "
+            "Keep the `class XxxStrategy(SignalStrategy):` declaration."
+        )
+    # Prefer the LAST candidate so a user editing multiple class blocks gets
+    # the bottom-most one (matches Python class-redefinition semantics).
+    return candidates[-1]
+
+
 def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
+    requested_source = body.get("data_source") or body.get("source")
+    if requested_source:
+        ensure_ready(requested_source)
     # Snapshot the shared dataset under the lock so a concurrent
     # add_tickers_to_universe rebuild can't swap the panel out from under us
     # mid-run (KeyError on dropped columns, stale prices, etc.).
@@ -434,20 +641,43 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
             )
     start = body.get("start") or date_min
     end = body.get("end") or date_max
+    start_ts = pd.Timestamp(start)
+    end_ts = pd.Timestamp(end)
+    if start_ts > end_ts:
+        raise ValueError(f"start date must be on or before end date ({start} > {end})")
 
-    # Strategy constructor args (whitelisted)
+    # Strategy constructor args (whitelisted to the catalog params).
     kw_allowed = {p["name"] for p in strat_entry["params"]}
     strat_kwargs = {k: strategy_params[k] for k in kw_allowed if k in strategy_params}
-    strat_instance = strat_entry["cls"](**strat_kwargs)
 
-    # BacktestConfig: fixed defaults + global engine knobs + per-strategy overrides
+    # Live-code override: if the body carries an edited class definition,
+    # compile it on the fly and use it instead of the catalog class. The
+    # catalog params still drive the constructor — but the user's class may
+    # accept fewer/more kwargs, so we filter to whatever the new class
+    # actually exposes.
+    source_override = body.get("strategy_source_override")
+    edited_cls_name: Optional[str] = None
+    if source_override:
+        live_cls = _compile_strategy_override(source_override, fallback_cls=strat_entry["cls"])
+        edited_cls_name = live_cls.__name__
+        sig = inspect.signature(live_cls.__init__)
+        accepted = {name for name in sig.parameters if name != "self"}
+        live_kwargs = {k: v for k, v in strat_kwargs.items() if k in accepted}
+        try:
+            strat_instance = live_cls(**live_kwargs)
+        except TypeError as exc:
+            raise ValueError(f"edited class constructor rejected the catalog params: {exc}") from exc
+    else:
+        strat_instance = strat_entry["cls"](**strat_kwargs)
+
+    # BacktestConfig: fixed defaults + global engine knobs (defaults seeded
+    # from the catalog so the response config block is always populated, even
+    # when the caller omits engine_params entirely) + per-strategy overrides.
     cfg_kwargs = dict(FIXED_ENGINE)
     for p in ENGINE_PARAMS:
-        if p["name"] in engine_params:
-            cfg_kwargs[p["name"]] = engine_params[p["name"]]
+        cfg_kwargs[p["name"]] = engine_params.get(p["name"], p["default"])
     for p in strat_entry.get("engine_overrides", []):
-        if p["name"] in engine_overrides_in:
-            cfg_kwargs[p["name"]] = engine_overrides_in[p["name"]]
+        cfg_kwargs[p["name"]] = engine_overrides_in.get(p["name"], p["default"])
     # Auto-flip long_only based on short_quantile — a positive short leg
     # means we actually want to short (otherwise build_target_weights silently
     # ignores the short side).
@@ -485,11 +715,14 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
         "strategy_id": strategy_id, "strategy_params": strat_kwargs,
         "engine_params": cfg_kwargs, "start": start, "end": end,
         "tickers": selected_tickers,
+        # Edited source goes into the cache key so two runs with different
+        # edits don't collide. Use a hash so we don't bloat the key.
+        "src_hash": hashlib.md5(source_override.encode()).hexdigest() if source_override else None,
     })
     if key in _SIM_CACHE:
         return _SIM_CACHE[key]
 
-    window = (pd.Timestamp(start), pd.Timestamp(end))
+    window = (start_ts, end_ts)
 
     prices = dataset.prices.loc[window[0]:window[1]]
     if selected_tickers:
@@ -532,15 +765,42 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     net_cum = (1 + result.net_returns.fillna(0)).cumprod() - 1
     bench_cum = (1 + benchmark.reindex(result.net_returns.index).fillna(0)).cumprod() - 1
 
+    # Drawdown curve — fraction underwater from running peak. Same formula
+    # as backtester/tearsheet.py:38 but emitted as a JSON-friendly list.
+    net_dd = (net_cum.add(1) / net_cum.add(1).cummax() - 1)
+    bench_dd = (bench_cum.add(1) / bench_cum.add(1).cummax() - 1)
+
     turnover_ann = float(result.turnover.mean() * 252)
     tcost_drag_ann = float(result.transaction_costs.mean() * 252)
 
+    # Monthly returns — port of backtester/tearsheet.py:76. Emit a list of
+    # {year, month, ret} cells so the frontend can pivot it into a heatmap.
+    monthly_ret = (
+        result.net_returns.resample("ME").apply(lambda r: (1 + r).prod() - 1)
+    )
+    monthly_payload = [
+        {"year": int(d.year), "month": int(d.month), "ret": float(v)}
+        for d, v in monthly_ret.items()
+        if pd.notna(v)
+    ]
+
     response = {
-        "strategy": {"id": strategy_id, "label": strat_entry["label"]},
+        "strategy": {
+            "id": strategy_id,
+            "label": strat_entry["label"],
+            "edited_cls_name": edited_cls_name,
+            "live_edit": bool(source_override),
+        },
         "dates": [d.strftime("%Y-%m-%d") for d in result.net_returns.index],
         "cumulative_net": [float(v) for v in net_cum.values],
         "cumulative_benchmark": [float(v) for v in bench_cum.values],
-        "metrics_net": _metrics(result.net_returns),
+        "cumulative_drawdown": [float(v) for v in net_dd.values],
+        "cumulative_drawdown_benchmark": [float(v) for v in bench_dd.values],
+        "monthly_returns": monthly_payload,
+        "metrics_net": _metrics(
+            result.net_returns,
+            benchmark=benchmark.reindex(result.net_returns.index).fillna(0),
+        ),
         "metrics_benchmark": _metrics(benchmark.reindex(result.net_returns.index).fillna(0)),
         "order_summary": {
             "turnover_annualized": turnover_ann,
@@ -567,8 +827,10 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Data inspector
 # ---------------------------------------------------------------------------
-def data_overview() -> Dict[str, Any]:
+def data_overview(source: str = None) -> Dict[str, Any]:
     """Per-ticker summary rows for the table view."""
+    if source:
+        ensure_ready(source)
     if not _STATE["ready"]:
         raise RuntimeError("simulator not ready")
     dataset = _STATE["dataset"]
@@ -616,8 +878,10 @@ def data_overview() -> Dict[str, Any]:
     }
 
 
-def ticker_detail(ticker: str) -> Dict[str, Any]:
+def ticker_detail(ticker: str, source: str = None) -> Dict[str, Any]:
     """Price history + summary stats for a single ticker."""
+    if source:
+        ensure_ready(source)
     if not _STATE["ready"]:
         raise RuntimeError("simulator not ready")
     dataset = _STATE["dataset"]
