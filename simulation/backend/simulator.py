@@ -12,6 +12,7 @@ fields are held at sensible defaults; extend CATALOG / ENGINE_PARAMS to grow.
 """
 from __future__ import annotations
 
+import gc
 import hashlib
 import inspect
 import json
@@ -209,8 +210,8 @@ STRATEGIES = [
         "params": [
             {"name": "customer_lookback_days", "type": "int", "default": 21, "min": 5, "max": 63, "step": 1,
              "help": "Recent-return window on the customer side (21 ≈ 1mo)."},
-            {"name": "min_customers", "type": "int", "default": 1, "min": 1, "max": 5, "step": 1,
-             "help": "Minimum customers with valid returns required to score a supplier."},
+            {"name": "min_customers", "type": "int", "default": 1, "min": 1, "max": 3, "step": 1,
+             "help": "Minimum customers with valid returns required to score a supplier. (Cap is 3 — only a few suppliers in the curated map have ≥4 simultaneously-valid customers, so higher values produce a near-flat signal.)"},
         ],
         "engine_overrides": [
             {**_SHORT_QUANTILE_OVERRIDE, "default": 0.20,
@@ -365,9 +366,18 @@ def warmup(start: str = "2005-01-01", end: str = None, source: str = None) -> No
             _STATE["dataset"] = None
             _STATE["benchmark"] = None
             _DATASET_CACHE.clear()
+            # Per-run cache holds large response blobs that may pin slices of
+            # the previous dataset via shared numpy buffers. Clear before GC.
+            _SIM_CACHE.clear()
         _STATE["data_source"] = source
         _STATE["message"] = f"loading {source} dataset"
         _STATE["error"] = None
+    if not _DATASET_CACHE_ENABLED:
+        # Force a generational sweep BEFORE allocating the new panel — Python
+        # left to its own schedule may not collect the previous dataset until
+        # well into the wharton load, double-peaking memory and OOMing the
+        # Fly VM. Out-of-lock so we don't block other readers during GC.
+        gc.collect()
     try:
         if source == "yfinance":
             cached = list_cached_tickers()
@@ -686,6 +696,12 @@ def _compile_strategy_override(source: str, fallback_cls):
         if not attr.startswith("_") or attr == "_cross_sectional_zscore" or attr == "_sector_neutral_zscore":
             namespace.setdefault(attr, getattr(_rs_mod, attr))
     namespace["SignalStrategy"] = _rs_mod.SignalStrategy
+    # Snapshot the pre-exec namespace so we can identify classes that were
+    # actually introduced or redefined by the user's source. Without this
+    # snapshot, every other strategy re-exported from research_strategies is
+    # also a SignalStrategy subclass in the namespace and the candidate scan
+    # picks one of them (the last by dict order) instead of the user's class.
+    pre_exec = {k: namespace[k] for k in namespace}
     try:
         compiled = compile(source, "<live-edit>", "exec")
         exec(compiled, namespace)
@@ -693,14 +709,15 @@ def _compile_strategy_override(source: str, fallback_cls):
         raise ValueError(f"syntax error in edited code (line {exc.lineno}): {exc.msg}") from exc
     except Exception as exc:
         raise ValueError(f"error executing edited code: {exc}") from exc
-    # Find the SignalStrategy subclass the user defined (skip the imported
-    # ABC itself, and skip the fallback class which is also in the namespace).
+    # Only consider classes that the user's exec actually introduced or
+    # rebound. Re-exported strategies from research_strategies retain their
+    # original identity and are excluded here.
     candidates = [
-        v for v in namespace.values()
+        v for k, v in namespace.items()
         if isinstance(v, type)
         and issubclass(v, _rs_mod.SignalStrategy)
         and v is not _rs_mod.SignalStrategy
-        and v is not fallback_cls
+        and pre_exec.get(k) is not v
     ]
     if not candidates:
         raise ValueError(
@@ -735,6 +752,62 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     strategy_params = body.get("strategy_params", {}) or {}
     engine_params = body.get("engine_params", {}) or {}
     engine_overrides_in = body.get("engine_overrides", {}) or {}
+
+    # Range validation — keep the API honest with the catalog so a typoed
+    # request (e.g. long_quantile=1.25) is rejected loudly rather than
+    # silently coerced and used in config.
+    def _coerce(value, ptype):
+        try:
+            return int(value) if ptype == "int" else float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"value {value!r} is not a valid {ptype}") from exc
+
+    def _validate_against_specs(values: Dict[str, Any], specs: List[Dict[str, Any]], group: str) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        spec_by_name = {p["name"]: p for p in specs}
+        for k, v in values.items():
+            if k not in spec_by_name:
+                # Unknown keys are tolerated (kw_allowed below filters strategy
+                # params; engine knobs we just ignore here too).
+                continue
+            spec = spec_by_name[k]
+            try:
+                coerced = _coerce(v, spec["type"])
+            except ValueError as exc:
+                raise ValueError(f"{group}.{k}: {exc}") from exc
+            lo = spec.get("min")
+            hi = spec.get("max")
+            if lo is not None and coerced < lo:
+                raise ValueError(f"{group}.{k}={v} is below the allowed minimum {lo}")
+            if hi is not None and coerced > hi:
+                raise ValueError(f"{group}.{k}={v} is above the allowed maximum {hi}")
+            out[k] = coerced
+        return out
+
+    strategy_params = _validate_against_specs(strategy_params, strat_entry["params"], "strategy_params")
+    engine_params = _validate_against_specs(engine_params, ENGINE_PARAMS, "engine_params")
+    engine_overrides_in = _validate_against_specs(
+        engine_overrides_in, strat_entry.get("engine_overrides", []), "engine_overrides"
+    )
+
+    # Cross-parameter checks — formulas-based constraints the catalog can't
+    # express on a single field.
+    if strategy_id in {"momentum", "residual_momentum"}:
+        sk = strategy_params.get("skip_days")
+        lb = strategy_params.get("lookback_days")
+        if sk is not None and lb is not None and sk >= lb:
+            raise ValueError(
+                f"skip_days ({sk}) must be strictly less than lookback_days ({lb}); "
+                "the formula skips the most recent skip_days *within* the lookback window."
+            )
+    if strategy_id == "moving_average":
+        sw = strategy_params.get("short_window")
+        lw = strategy_params.get("long_window")
+        if sw is not None and lw is not None and sw >= lw:
+            raise ValueError(
+                f"short_window ({sw}) must be strictly less than long_window ({lw}); "
+                "the crossover model assumes a fast MA above/below a slow MA."
+            )
     # Distinguish "tickers not provided / null" (= full universe) from
     # "tickers: [] explicitly" (= user narrowed to zero names, should fail
     # loudly rather than silently run the full cache).
@@ -801,9 +874,18 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
         selected_tickers = sorted(t for t in custom_tickers if t in available)
         missing = sorted(t for t in custom_tickers if t not in available)
         if not selected_tickers:
+            current_source = _STATE.get("data_source") or DEFAULT_SOURCE
+            if current_source == "wharton":
+                raise ValueError(
+                    "none of the requested tickers are in the Wharton panel — "
+                    "it is a static dataset of ~865 names and cannot be "
+                    "extended. Pick from existing tickers, or switch to "
+                    "yfinance to fetch new ones. Missing: " + ", ".join(missing)
+                )
             raise ValueError(
-                "none of the requested tickers are in the cache — run "
-                "/api/universe/add first. Missing: " + ", ".join(missing)
+                "none of the requested tickers are in the yfinance cache — "
+                "POST /api/universe/add to fetch them first. "
+                "Missing: " + ", ".join(missing)
             )
         universe_note = {"selected": selected_tickers, "missing": missing}
         # Scale min_names for small custom universes so the strategy actually
@@ -884,6 +966,26 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
     turnover_ann = float(result.turnover.mean() * 252)
     tcost_drag_ann = float(result.transaction_costs.mean() * 252)
 
+    # Detect a degenerate run — every rebalance produced an empty book, so
+    # the result is a flat zero curve. Surface a warning so the UI doesn't
+    # advertise a "0 Sharpe / 0 return" config as a working strategy. The
+    # most common cause is a parameter combination that filters every name
+    # (e.g. Customer-Supplier min_customers too high), or a custom universe
+    # too small to clear min_names.
+    warnings: List[str] = []
+    nonzero_weights = float(result.target_weights.abs().to_numpy().sum()) if result.target_weights is not None else 0.0
+    if nonzero_weights == 0.0:
+        if strategy_id == "customer_supplier_momentum":
+            warnings.append(
+                "every rebalance produced an empty book — try lowering min_customers; "
+                "few suppliers in the curated map have many simultaneously-valid customers."
+            )
+        else:
+            warnings.append(
+                "every rebalance produced an empty book — the parameter combination "
+                "filters every name (e.g. min_names not met, or signal undefined for the chosen window)."
+            )
+
     # Monthly returns — port of backtester/tearsheet.py:76. Emit a list of
     # {year, month, ret} cells so the frontend can pivot it into a heatmap.
     monthly_ret = (
@@ -930,6 +1032,7 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
             "short_quantile": float(cfg_kwargs.get("short_quantile", 0.0)),
             "leverage": float(cfg_kwargs.get("leverage", 1.0)),
         },
+        "warnings": warnings,
     }
     _SIM_CACHE[key] = response
     # Bounded LRU: evict the oldest entries until we're back within the cap.
