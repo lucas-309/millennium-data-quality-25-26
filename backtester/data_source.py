@@ -660,6 +660,17 @@ class WhartonResearchDataSource(DataSource):
 
     DEFAULT_EVENT_COLUMNS = ("anncdate", "recorddate", "paydate", "divdpaydate")
 
+    # Columns the research loader actually reads. Reading the full 76-column
+    # parquet decompresses to ~9GB RSS; projecting to this whitelist drops
+    # the read peak to <1GB. _load_data falls back to the full read for any
+    # columns that aren't in the parquet (older snapshots).
+    _REQUIRED_COLUMNS: tuple[str, ...] = (
+        "tic", "datadate", "prccd", "ajexdi", "trfd",
+        "cshtrd", "divd", "cshoc", "eps",
+        "conm", "gsector", "gind", "sic", "naics", "exchg", "fic",
+        "anncdate", "recorddate", "paydate", "divdpaydate",
+    )
+
     def __init__(self, file_path: str, use_total_return: bool = True):
         self.file_path = file_path
         self.use_total_return = use_total_return
@@ -671,7 +682,18 @@ class WhartonResearchDataSource(DataSource):
             raise FileNotFoundError(f"Data file not found at {file_path}")
 
         if file_path.endswith(".parquet"):
-            data = pd.read_parquet(file_path)
+            # Project to the columns the research loader reads. The parquet
+            # has ~76 columns but only ~20 are consumed downstream; reading
+            # the rest costs gigabytes of RAM during decode for nothing.
+            try:
+                import pyarrow.parquet as _pq
+                schema_cols = set(_pq.read_schema(file_path).names)
+                wanted = [c for c in self._REQUIRED_COLUMNS if c in schema_cols]
+                data = pd.read_parquet(file_path, columns=wanted) if wanted else pd.read_parquet(file_path)
+            except Exception:
+                # Fall back to a full read if pyarrow inspection fails — keeps
+                # this loader robust to unusual parquet layouts.
+                data = pd.read_parquet(file_path)
         elif file_path.endswith(".xlsx") or file_path.endswith(".xls"):
             data = pd.read_excel(file_path)
         elif file_path.endswith(".csv"):
