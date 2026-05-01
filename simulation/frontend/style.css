@@ -1170,9 +1170,9 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
   .app-split { grid-template-columns: 1fr; }
   .sidebar { position: static; max-height: none; overflow: visible; }
   .metrics-strip { grid-template-columns: repeat(2, 1fr); }
-  .metrics-strip .m-card { border-bottom: 1px solid var(--border); }
-  .metrics-strip .m-card:nth-child(2n) { border-right: 0; }
-  .metrics-strip .m-card:nth-last-child(-n+2) { border-bottom: 0; }
+  .metrics-strip .m-card { border-bottom: 1px solid var(--border) !important; border-right: 1px solid var(--border) !important; }
+  .metrics-strip .m-card:nth-child(2n) { border-right: 0 !important; }
+  .metrics-strip .m-card:nth-last-child(-n+2) { border-bottom: 0 !important; }
   .data-body { grid-template-columns: 1fr; }
   .data-left { border-right: 0; border-bottom: 1px solid var(--border); }
   .statusbar::after { display: none; }
