@@ -113,12 +113,13 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
 
         if path == "/api/status":
+            # GET is read-only — the previous version triggered a server-wide
+            # source switch as a side effect of the status query, so a poll
+            # for "wharton readiness" would silently flip every other client
+            # off yfinance. Source switches now go through POST /api/warmup.
             requested_source = _query_source(parsed)
             try:
                 _validate_source(requested_source)
-                if requested_source:
-                    _prepare_warmup(requested_source)
-                    _kick_warmup_async(source=requested_source)
                 self._send_json(simulator.status(source=requested_source))
             except ValueError as exc:
                 self._send_json({"error": str(exc)}, status=400)

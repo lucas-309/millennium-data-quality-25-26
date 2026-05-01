@@ -166,6 +166,12 @@ interface StatusResponse {
   available_sources?: string[];
 }
 
+interface UniverseSnapshot {
+  customTickers: string[];
+  hasCustomFilter: boolean;
+  universeMissingCount: number;
+}
+
 interface AppState {
   catalog: Catalog | null;
   currentStrategy: Strategy | null;
@@ -183,6 +189,12 @@ interface AppState {
   // "empty filter = default full cache", which used to get conflated and
   // run the full universe on what should have been an empty result.
   hasCustomFilter: boolean;
+  // Snapshot of the universe state before an in-flight Apply/Exclude. If
+  // the run that follows errors out, the run() error handler restores from
+  // this snapshot — without it, a failed apply (e.g. ZZZZ_NO_SUCH against
+  // Wharton) leaves the sidebar showing "custom: 1 ticker" while the
+  // metrics on screen still belong to the previous successful run.
+  pendingUniverseRevert: UniverseSnapshot | null;
   pinnedRuns: PinnedRun[];
   dataSource: string;
   availableSources: string[];
@@ -256,6 +268,7 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     customTickers: [],
     universeMissingCount: 0,
     hasCustomFilter: false,
+    pendingUniverseRevert: null,
     pinnedRuns: loadPinnedFromStorage(),
     dataSource: "yfinance",
     availableSources: ["yfinance", "wharton"],
@@ -600,12 +613,16 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       scheduleRun();
     };
     const syncFromNumber = (): void => {
-      // Don't clamp while user is typing — just mirror the value into the
-      // slider (slider clips visually) and trigger a debounced run.
+      // Mirror the typed value into the slider while typing. We only
+      // schedule a run when the typed value is actually in range — the
+      // slider clips visually, so an out-of-range typed value would run
+      // with a different number than what the spinbox displays. The change
+      // handler below clamps + runs once the user commits (blur / Enter).
       const v = parseFloat(numInp.value);
       if (!Number.isFinite(v)) return;
       slider.value = String(v);
       updateResetState();
+      if (v < +p.min || v > +p.max) return;
       renderLiveCode();
       scheduleRun();
     };
@@ -690,10 +707,22 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     const longPct = (longQ * 100).toFixed(0);
     const shortPct = (shortQ * 100).toFixed(0);
     if (shortQ > 0) {
+      // Gross budget is split proportionally to the requested quantile sizes
+      // (research_backtester._gross_budgets), not 50/50. With long=0.20 and
+      // short=0.10, the long leg gets long/(long+short) = 67% of capital
+      // and the short leg gets 33% — matching the "long bucket bigger than
+      // short bucket" intent of the catalog defaults.
+      const denom = longQ + shortQ;
+      const longShare = denom > 0 ? longQ / denom : 0.5;
+      const shortShare = denom > 0 ? shortQ / denom : 0.5;
+      const longSharePct = (longShare * 100).toFixed(0);
+      const shortSharePct = (shortShare * 100).toFixed(0);
+      const netPct = ((longShare - shortShare) * 100).toFixed(0);
+      const netSign = (longShare - shortShare) > 0 ? "+" : "";
       el.innerHTML =
-        `<span class="sizing-tag">LONG</span> top ${longPct}% (~${longNames} of ${universeSize}) · 50% of capital. ` +
-        `<span class="sizing-short">SHORT</span> bottom ${shortPct}% (~${shortNames}) · 50% of capital. ` +
-        `Net 0%, gross 100%.`;
+        `<span class="sizing-tag">LONG</span> top ${longPct}% (~${longNames} of ${universeSize}) · ${longSharePct}% of capital. ` +
+        `<span class="sizing-short">SHORT</span> bottom ${shortPct}% (~${shortNames}) · ${shortSharePct}% of capital. ` +
+        `Net ${netSign}${netPct}%, gross 100%.`;
     } else {
       el.innerHTML =
         `<span class="sizing-tag">LONG</span> top ${longPct}% (~${longNames} of ${universeSize}) · 100% of capital. ` +
@@ -862,11 +891,28 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       lastRender.simPayload = body as unknown as SimRequest;
       renderResults(data);
       setStatus(`ready · last run ${(elapsed / 1000).toFixed(2)}s`, "ready");
+      // The optimistic universe change committed cleanly — drop the snapshot.
+      state.pendingUniverseRevert = null;
+      const warnings = (data as SimulationResult & { warnings?: string[] }).warnings;
+      if (warnings && warnings.length) {
+        toast(warnings.join(" · "), true, 6000);
+      }
     } catch (exc) {
       console.error(exc);
       const msg = exc instanceof Error ? exc.message : String(exc);
       toast(`Error: ${msg}`, true, 6000);
       setStatus(`error: ${msg}`, "error");
+      // Roll back any optimistic universe-state change so the sidebar
+      // doesn't keep claiming a custom filter that the server rejected.
+      if (state.pendingUniverseRevert) {
+        const snap = state.pendingUniverseRevert;
+        state.pendingUniverseRevert = null;
+        state.customTickers = snap.customTickers;
+        state.hasCustomFilter = snap.hasCustomFilter;
+        state.universeMissingCount = snap.universeMissingCount;
+        refreshUniverseStatus();
+        updateSizing();
+      }
     } finally {
       state.running = false;
       progressDone();
@@ -942,11 +988,20 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
         hovertemplate: "%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>Benchmark</extra>",
       },
     ];
+    // Pinned curves are stored at their original anchor (cumulative from each
+    // run's own start). When the live date range changes we clip pinned to
+    // the visible window and rebase to 0% at the new left edge so the live
+    // and pinned traces share a baseline; otherwise pinned would enter the
+    // chart in mid-air. Drawdown is recomputed from the rebased factor.
+    const liveStart = data.dates[0];
+    const liveEnd = data.dates[data.dates.length - 1];
     for (const pinned of state.pinnedRuns) {
+      const clipped = clipPinnedToRange(pinned, liveStart, liveEnd);
+      if (!clipped) continue;
       const color = eqPal.series[pinned.colorIdx % eqPal.series.length];
       traces.push({
-        x: pinned.dates,
-        y: pinned.cumulativeNet,
+        x: clipped.dates,
+        y: clipped.cumulativeNet,
         name: pinned.label,
         type: "scatter",
         mode: "lines",
@@ -956,11 +1011,10 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
         opacity: 0.85,
         hovertemplate: `%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>${escapeHtml(pinned.label)}</extra>`,
       });
-      // Pinned drawdown trace on the bottom pane, dimmer matching color.
-      if (pinned.cumulativeDrawdown && pinned.cumulativeDrawdown.length) {
+      if (clipped.cumulativeDrawdown.length) {
         traces.push({
-          x: pinned.dates,
-          y: pinned.cumulativeDrawdown,
+          x: clipped.dates,
+          y: clipped.cumulativeDrawdown,
           name: `${pinned.label} · DD`,
           type: "scatter",
           mode: "lines",
@@ -1100,6 +1154,45 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       tickerHash,
     ].join("|");
   }
+  function clipPinnedToRange(
+    pinned: PinnedRun,
+    fromDate: string,
+    toDate: string,
+  ): { dates: string[]; cumulativeNet: number[]; cumulativeDrawdown: number[] } | null {
+    if (!pinned.dates.length) return null;
+    // ISO YYYY-MM-DD strings sort lexicographically, so direct comparison
+    // gives a chronological one.
+    const startIdx = pinned.dates.findIndex((d) => d >= fromDate);
+    if (startIdx < 0) return null;
+    if (pinned.dates[startIdx] > toDate) return null;
+    let endIdx = pinned.dates.length - 1;
+    for (let i = startIdx; i < pinned.dates.length; i++) {
+      if (pinned.dates[i] > toDate) {
+        endIdx = i - 1;
+        break;
+      }
+    }
+    if (endIdx < startIdx) return null;
+    const dates = pinned.dates.slice(startIdx, endIdx + 1);
+    // cumulativeNet is stored in percent. Rebase: factor / anchor − 1.
+    const anchor = 1 + pinned.cumulativeNet[startIdx] / 100;
+    const cumulativeNet: number[] = [];
+    const factors: number[] = [];
+    for (let i = startIdx; i <= endIdx; i++) {
+      const f = (1 + pinned.cumulativeNet[i] / 100) / anchor;
+      factors.push(f);
+      cumulativeNet.push((f - 1) * 100);
+    }
+    const cumulativeDrawdown: number[] = [];
+    if (pinned.cumulativeDrawdown && pinned.cumulativeDrawdown.length) {
+      let runningMax = -Infinity;
+      for (const f of factors) {
+        if (f > runningMax) runningMax = f;
+        cumulativeDrawdown.push((f / runningMax - 1) * 100);
+      }
+    }
+    return { dates, cumulativeNet, cumulativeDrawdown };
+  }
   function pinCurrentRun(): void {
     if (!lastRender.sim || !lastRender.simPayload || !state.currentStrategy) {
       toast("nothing to pin yet — run a backtest first", true);
@@ -1209,6 +1302,12 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       const color = pal.series[pinned.colorIdx % pal.series.length];
       const sharpe = pinned.metricsNet?.sharpe;
       const ret = pinned.metricsNet?.annualized_return;
+      // Use the run's actual first/last trading days rather than the
+      // requested window — the requested window can include weekends or
+      // dates the dataset doesn't cover (e.g. 2005-01-01 vs the data's
+      // 2005-01-03), and the chip should reflect what was actually run.
+      const dispStart = pinned.dates[0] ?? pinned.payload.start;
+      const dispEnd = pinned.dates[pinned.dates.length - 1] ?? pinned.payload.end;
       const chip = document.createElement("div");
       chip.className = "pinned-chip";
       chip.innerHTML = `
@@ -1218,7 +1317,7 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
           <div class="pinned-meta">
             ${sharpe != null ? `Sharpe ${sharpe.toFixed(2)}` : ""}
             ${ret != null ? ` · ann ${(ret * 100).toFixed(1)}%` : ""}
-            ${pinned.payload.start} → ${pinned.payload.end}
+            ${dispStart} → ${dispEnd}
           </div>
         </div>
         <button type="button" class="pinned-restore" title="reload these params into the controls" aria-label="reload params">↺</button>
@@ -1452,6 +1551,17 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     if (!rows.length) {
       body.innerHTML = `<tr><td colspan="6" style="padding: 20px; text-align: center; color: var(--muted);">no matches</td></tr>`;
     }
+    // Clear the right-pane detail when the current selection has been
+    // filtered out — otherwise the chart and stats keep showing AAPL while
+    // the table says "no matches", which reads as broken.
+    if (state.selectedTicker && !rows.some((r) => r.ticker === state.selectedTicker)) {
+      state.selectedTicker = null;
+      const right = document.getElementById("data-right");
+      if (right) {
+        right.innerHTML = `<div class="data-empty">Pick a ticker to preview its price history.</div>`;
+      }
+      lastRender.ticker = undefined;
+    }
   }
   function escapeHtml(s: string): string {
     return s.replace(
@@ -1591,6 +1701,15 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
         toast("paste tickers to restrict to", true);
         return;
       }
+      // Capture the current universe state so a failed run (e.g. an
+      // invalid Wharton ticker) can roll the sidebar back instead of
+      // leaving "custom: 1 ticker" visible while the previous run's
+      // metrics still occupy the chart.
+      state.pendingUniverseRevert = {
+        customTickers: state.customTickers.slice(),
+        hasCustomFilter: state.hasCustomFilter,
+        universeMissingCount: state.universeMissingCount,
+      };
       state.customTickers = tickers;
       state.hasCustomFilter = true;
       state.universeMissingCount = 0;
@@ -1634,6 +1753,12 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       }
       const matched = allCached.filter((t) => excludeSet.has(t)).length;
       const missing = excluded.length - matched;
+      // Same revert-on-error pattern as the Apply button.
+      state.pendingUniverseRevert = {
+        customTickers: state.customTickers.slice(),
+        hasCustomFilter: state.hasCustomFilter,
+        universeMissingCount: state.universeMissingCount,
+      };
       state.customTickers = complement;
       state.hasCustomFilter = true;
       state.universeMissingCount = missing;
@@ -1725,6 +1850,16 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
           startEl.max = s.date_max ?? "";
           endEl.min = s.date_min ?? "";
           endEl.max = s.date_max ?? "";
+          // Clamp the visible value into the new bounds — the HTML default
+          // is 2005-01-03 (yfinance's first trading day) but Wharton starts
+          // on a different day, and a stale value below `min` would run and
+          // pin as a date the dataset never had.
+          if (s.date_min && startEl.value && startEl.value < s.date_min) {
+            startEl.value = s.date_min;
+          }
+          if (s.date_max && endEl.value && endEl.value > s.date_max) {
+            endEl.value = s.date_max;
+          }
           const label = s.universe_label || `${s.tickers} tickers`;
           $("universe-label").textContent = `universe: ${label}`;
           state.universeSize = s.tickers || 0;
