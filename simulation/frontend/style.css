@@ -775,6 +775,69 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 /* ---- Charts ---- */
 .chart { height: 540px; padding: 10px 12px 6px; }
 .heatmap-chart { padding: 10px 14px 14px; min-height: 180px; }
+
+/* ---- Signal preview — top-N longs / bottom-N shorts at latest date ---- */
+.signal-preview {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--border);
+}
+.signal-preview .sp-col {
+  background: var(--panel);
+  padding: 12px 14px 14px;
+}
+.signal-preview .sp-col-head {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.signal-preview .sp-longs .sp-col-head { color: var(--gain); }
+.signal-preview .sp-shorts .sp-col-head { color: var(--loss); }
+.signal-preview .sp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+.signal-preview .sp-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text);
+  height: 26px;
+}
+.signal-preview .sp-table tr:last-child td { border-bottom: 0; }
+.signal-preview .sp-rank {
+  width: 32px;
+  color: var(--text-3);
+  font-size: 11px;
+  text-align: right;
+}
+.signal-preview .sp-tic {
+  font-weight: 600;
+  color: var(--amber);
+  letter-spacing: 0.04em;
+}
+.signal-preview .sp-score { text-align: right; }
+.signal-preview .sp-score.gain { color: var(--gain); }
+.signal-preview .sp-score.loss { color: var(--loss); }
+.signal-preview .sp-px { text-align: right; color: var(--text-2); }
+.signal-empty {
+  grid-column: 1 / -1;
+  padding: 16px 18px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-3);
+  background: var(--panel);
+}
+@media (max-width: 900px) {
+  .signal-preview { grid-template-columns: 1fr; }
+}
+
 .figure-cap { display: none; }
 .dingbat { display: none; }
 
@@ -1126,7 +1189,7 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
   margin-right: 6px;
 }
 .statusbar::after {
-  content: "F1·HELP   F2·SIM   F3·DATA   F5·RUN   ESC·CLEAR";
+  content: "ENTER·RUN   ⌘P·PIN   ⌘⇧R·RESET   1-9·STRATEGY   /·SEARCH   ESC·CLEAR";
   margin-left: auto;
   color: var(--text-mute);
   letter-spacing: 0.2em;
