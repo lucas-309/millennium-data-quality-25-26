@@ -11,9 +11,8 @@ declare const Plotly: {
   ): Promise<unknown>;
   purge(el: string | HTMLElement): void;
 };
-declare const Prism: {
-  highlightElement(el: HTMLElement): void;
-};
+// Prism removed — code panel is now an always-editable textarea, no
+// syntax highlighting layer.
 
 // ---------- API shapes ----------
 interface ParamSpec {
@@ -188,10 +187,8 @@ interface AppState {
   dataSource: string;
   availableSources: string[];
   // Live code editor: per-strategy edited source, keyed by strategy id.
-  // null means "no edit active" — the catalog source is rendered.
+  // Empty/missing means "use the catalog source unchanged".
   editedSourceByStrategy: Record<string, string>;
-  // Whether the editor pane is currently visible (textarea up, pre hidden).
-  editing: boolean;
 }
 
 interface SimRequest {
@@ -281,7 +278,6 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     dataSource: "yfinance",
     availableSources: ["yfinance", "wharton"],
     editedSourceByStrategy: {},
-    editing: false,
   };
 
   function loadPinnedFromStorage(): PinnedRun[] {
@@ -485,9 +481,8 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     const s = state.catalog!.strategies.find((x) => x.id === id);
     if (!s) return;
     state.currentStrategy = s;
-    // Switching tabs always exits editor mode — but per-strategy edits are
-    // preserved in editedSourceByStrategy and re-applied on return.
-    state.editing = false;
+    // Per-strategy edits live in editedSourceByStrategy and are re-applied
+    // on return — the textarea repaints from there in renderLiveCode().
     document.querySelectorAll<HTMLButtonElement>("#strategy-tabs button").forEach((b) => {
       b.classList.toggle("active", b.dataset.id === id);
     });
@@ -705,143 +700,92 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
   }
   function renderLiveCode(): void {
     const s = state.currentStrategy!;
-    const { strategyParams, engineParams, engineOverrides } = readParams();
-    const stratArgs = Object.entries(strategyParams)
-      .map(([k, v]) => `    ${k}=${pyRepr(v)},`)
-      .join("\n");
-    // If the user edited the class source, parse the new class name so the
-    // "your run" snippet reflects what actually executes.
-    const editedSrc = state.editedSourceByStrategy[s.id];
-    const editedClsMatch = editedSrc ? editedSrc.match(/class\s+(\w+)\s*\(/) : null;
-    const clsName = editedClsMatch ? editedClsMatch[1] : s.cls_name;
-    const stratCall = stratArgs
-      ? `strategy = ${clsName}(\n${stratArgs}\n)`
-      : `strategy = ${clsName}()`;
-
-    // Merge: live knobs + per-strategy overrides win; fixed defaults fill in.
-    const fixedEngine: Record<string, unknown> = { ...state.catalog!.fixed_engine };
-    for (const k of Object.keys(engineOverrides)) delete fixedEngine[k];
-    if ((engineOverrides.short_quantile ?? 0) > 0) fixedEngine.long_only = false;
-    const mergedLive: Record<string, number> = { ...engineParams, ...engineOverrides };
-
-    const liveCfgLines = Object.entries(mergedLive)
-      .map(([k, v]) => `    ${k}=${pyRepr(v)},`)
-      .join("\n");
-    const fixedLines = Object.entries(fixedEngine)
-      .map(([k, v]) => `    ${k}=${pyRepr(v)},`)
-      .join("\n");
-    const configCall =
-`config = BacktestConfig(
-${liveCfgLines}
-${fixedLines}
-)`;
-
-    const classSource = state.editedSourceByStrategy[s.id] ?? s.source;
-    const full =
-`# ── class source — ${s.source_file}
-${classSource}
-
-# ── your run (live values below)
-${stratCall}
-
-${configCall}
-
-scores  = strategy.generate(dataset).scores
-weights = build_target_weights(scores, dataset.returns, config)
-result  = run_weight_backtest(dataset.prices, weights, config,
-                              benchmark_returns=dataset.benchmark_returns)
-`;
-    const el = $("code-live");
-    el.textContent = full;
-    Prism.highlightElement(el);
-    syncEditButtons();
+    // Always-editable textarea: paint the catalog source (or the user's
+    // last edit, if they've touched this strategy). User changes are
+    // captured by the input listener below; we only re-paint here when
+    // the strategy switches or selection is reset.
+    const editor = $("code-editor") as HTMLTextAreaElement;
+    const stored = state.editedSourceByStrategy[s.id];
+    const targetSrc = stored != null ? stored : s.source;
+    if (editor.value !== targetSrc) {
+      editor.value = targetSrc;
+    }
     updateSizing();
   }
 
-  // ---------- Live code editor ----------
-  function syncEditButtons(): void {
-    const s = state.currentStrategy;
-    const hasEdit = !!(s && state.editedSourceByStrategy[s.id] != null);
-    const status = $("code-edit-status");
-    const toggleBtn = $("code-edit-toggle") as HTMLButtonElement;
-    const runBtn = $("code-edit-run") as HTMLButtonElement;
-    const revertBtn = $("code-edit-revert") as HTMLButtonElement;
-    const editor = $("code-editor") as HTMLTextAreaElement;
-    const pre = document.querySelector(".code-block") as HTMLElement | null;
-
-    if (state.editing) {
-      toggleBtn.textContent = "Cancel";
-      runBtn.hidden = false;
-      revertBtn.hidden = !hasEdit;
-      editor.hidden = false;
-      if (pre) pre.hidden = true;
-      status.textContent = "editing — Cmd+Enter to run";
-    } else {
-      toggleBtn.textContent = hasEdit ? "Edit (modified)" : "Edit";
-      runBtn.hidden = true;
-      revertBtn.hidden = !hasEdit;
-      editor.hidden = true;
-      if (pre) pre.hidden = false;
-      status.textContent = hasEdit ? "running edited code" : "";
-    }
-  }
   function classSourceForCurrent(): string {
     const s = state.currentStrategy!;
     return state.editedSourceByStrategy[s.id] ?? s.source;
   }
-  function enterEditMode(): void {
-    const s = state.currentStrategy;
-    if (!s) return;
-    const editor = $("code-editor") as HTMLTextAreaElement;
-    editor.value = classSourceForCurrent();
-    state.editing = true;
-    syncEditButtons();
-    editor.focus();
+
+  // Debounced auto-commit: every keystroke in the textarea schedules a
+  // re-run after the user pauses typing. Backend's _compile_strategy_override
+  // tolerates a tweaked class — and broken syntax just bubbles back as a
+  // toast, no UI lockup.
+  let codeEditTimer: number | null = null;
+  function scheduleEditedRun(): void {
+    if (codeEditTimer !== null) clearTimeout(codeEditTimer);
+    codeEditTimer = window.setTimeout(() => {
+      const s = state.currentStrategy;
+      if (!s) return;
+      const editor = $("code-editor") as HTMLTextAreaElement;
+      const src = editor.value;
+      const trimmed = src.trim();
+      if (!trimmed) {
+        // Empty-buffer = revert to catalog source.
+        delete state.editedSourceByStrategy[s.id];
+      } else if (trimmed === s.source.trim()) {
+        // Same as the catalog → don't ship an override.
+        delete state.editedSourceByStrategy[s.id];
+      } else {
+        state.editedSourceByStrategy[s.id] = src;
+      }
+      scheduleRun();
+    }, 1200);
   }
-  function exitEditMode(): void {
-    state.editing = false;
-    syncEditButtons();
-  }
-  function runEditedCode(): void {
-    const s = state.currentStrategy;
-    if (!s) return;
-    const editor = $("code-editor") as HTMLTextAreaElement;
-    const src = editor.value;
-    if (!src.trim()) {
-      toast("editor is empty — nothing to run", true);
-      return;
+
+  const codeEditor = $("code-editor") as HTMLTextAreaElement;
+  codeEditor.addEventListener("input", scheduleEditedRun);
+  codeEditor.addEventListener("blur", () => {
+    // On focus loss, commit immediately (no waiting on the debounce).
+    if (codeEditTimer !== null) {
+      clearTimeout(codeEditTimer);
+      codeEditTimer = null;
     }
-    state.editedSourceByStrategy[s.id] = src;
-    state.editing = false;
-    renderLiveCode();
-    scheduleRun();
-  }
-  function revertEdit(): void {
     const s = state.currentStrategy;
     if (!s) return;
-    delete state.editedSourceByStrategy[s.id];
-    state.editing = false;
-    renderLiveCode();
+    const src = codeEditor.value;
+    const trimmed = src.trim();
+    if (!trimmed || trimmed === s.source.trim()) {
+      delete state.editedSourceByStrategy[s.id];
+    } else {
+      state.editedSourceByStrategy[s.id] = src;
+    }
     scheduleRun();
-  }
-  ($("code-edit-toggle") as HTMLButtonElement).addEventListener("click", () => {
-    if (state.editing) exitEditMode();
-    else enterEditMode();
   });
-  ($("code-edit-run") as HTMLButtonElement).addEventListener("click", runEditedCode);
-  ($("code-edit-revert") as HTMLButtonElement).addEventListener("click", revertEdit);
-  ($("code-editor") as HTMLTextAreaElement).addEventListener("keydown", (ev) => {
+  codeEditor.addEventListener("keydown", (ev) => {
     if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+      // Force-commit + run immediately, bypass the debounce.
       ev.preventDefault();
-      runEditedCode();
+      if (codeEditTimer !== null) {
+        clearTimeout(codeEditTimer);
+        codeEditTimer = null;
+      }
+      const s = state.currentStrategy;
+      if (s) {
+        const src = codeEditor.value;
+        const trimmed = src.trim();
+        if (!trimmed || trimmed === s.source.trim()) {
+          delete state.editedSourceByStrategy[s.id];
+        } else {
+          state.editedSourceByStrategy[s.id] = src;
+        }
+        scheduleRun();
+      }
       return;
     }
-    if (ev.key === "Escape") {
-      ev.preventDefault();
-      exitEditMode();
-      return;
-    }
-    // Tab inserts indent rather than moving focus.
+    // Tab inserts a 4-space indent rather than moving focus out of the
+    // textarea — table stakes for an actually-usable code editor.
     if (ev.key === "Tab") {
       ev.preventDefault();
       const ta = ev.currentTarget as HTMLTextAreaElement;
@@ -849,6 +793,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       const e = ta.selectionEnd;
       ta.value = ta.value.slice(0, s) + "    " + ta.value.slice(e);
       ta.selectionStart = ta.selectionEnd = s + 4;
+      scheduleEditedRun();
     }
   });
 
