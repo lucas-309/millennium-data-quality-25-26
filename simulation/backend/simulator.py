@@ -28,7 +28,11 @@ import numpy as np
 import pandas as pd
 
 from backtester import research_backtester as rbt
-from backtester.research_data import ResearchDataset, load_wharton_research_dataset
+from backtester.research_data import (
+    ResearchDataset,
+    load_financial_ratios_panel,
+    load_wharton_research_dataset,
+)
 from backtester.sp500_universe import load_sp500_universe
 from backtester.yfinance_cache import list_cached_tickers
 from backtester.yfinance_loader import load_yfinance_research_dataset
@@ -41,6 +45,10 @@ from strategies import research_strategies as rs
 DEFAULT_SOURCE = "yfinance"
 SUPPORTED_SOURCES = ("yfinance", "wharton")
 WHARTON_PARQUET = Path(__file__).resolve().parent.parent.parent / "backtester" / "WhartonDataSource4.parquet"
+# Wharton WRDS Financial Ratios panel — built by run_financial_ratios_fetch.py
+# from the FinancialRaitio.csv export. Used by the Value Composite strategy
+# when the active source is "wharton". The yfinance source has no equivalent.
+FINANCIAL_RATIOS_PARQUET = Path(__file__).resolve().parent.parent.parent / "backtester" / "financial_ratios.parquet"
 
 _LOCK = threading.Lock()
 _STATE: Dict[str, Any] = {
@@ -141,97 +149,18 @@ STRATEGIES = [
         "cls": rs.ValueCompositeStrategy,
         "cls_name": "ValueCompositeStrategy",
         "label": "Value Composite",
-        "formula": "score(t, i) = z(div_yield) + z(EPS / P) + z(− log market_cap)",
+        "formula": "score(t, i) = z(B/M) + z(E/P) + z(CF/P) + z(D/P)",
         "summary": (
-            "Fama & French (1992, 2015 — Five-Factor Model). Cross-sectional "
-            "value blend of trailing dividend yield, earnings yield (E/P), and "
-            "a small-size tilt, each cross-sectionally z-scored and summed. "
-            "Long the cheapest decile, optionally short the most expensive."
+            "Fama & French (1992, 2015 — HML / Five-Factor). Cross-sectional "
+            "z-score of four price-yield ratios sourced from the WRDS Financial "
+            "Ratios panel: book-to-market, earnings/price, cash-flow/price, and "
+            "dividend yield. Long the cheapest decile, optionally short the "
+            "richest. Wharton source only — yfinance has no fundamentals panel."
         ),
-        "params": [
-            {"name": "trailing_days", "type": "int", "default": 252, "min": 60, "max": 756, "step": 21,
-             "help": "Window for trailing dividend sum (252 = 1y)."},
-        ],
+        "params": [],
         "engine_overrides": [
             {**_SHORT_QUANTILE_OVERRIDE, "default": 0.10,
              "help": "Bottom decile (most expensive names) sold short — recovers the long-short HML sleeve."},
-        ],
-    },
-    {
-        "id": "moving_average",
-        "cls": rs.MovingAverageCrossoverStrategy,
-        "cls_name": "MovingAverageCrossoverStrategy",
-        "label": "Simple Moving Average",
-        "formula": "score(t, i) = MA_short(P, t, i) / MA_long(P, t, i) − 1",
-        "summary": "Cross-sectional moving-average crossover. Long names in the strongest uptrend (short MA above long MA), short the weakest.",
-        "params": [
-            {"name": "short_window", "type": "int", "default": 50,  "min": 5,  "max": 100, "step": 5,
-             "help": "Span of the fast moving average."},
-            {"name": "long_window",  "type": "int", "default": 200, "min": 50, "max": 400, "step": 10,
-             "help": "Span of the slow moving average."},
-        ],
-        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
-    },
-    {
-        "id": "residual_momentum",
-        "cls": rs.ResidualMomentumStrategy,
-        "cls_name": "ResidualMomentumStrategy",
-        "label": "Residual Momentum",
-        "formula": (
-            "ε_i(t) = r_i(t) − β_i(t)·r_m(t);   "
-            "score(t, i) = ⟨ ε_i(τ) / σ̂_ε,i(τ) ⟩  for  τ ∈ [t − skip − lookback, t − skip]"
-        ),
-        "summary": (
-            "Blitz, Huij & Martens (2011, JFE). Regress each stock's daily "
-            "returns on the equal-weight benchmark over a rolling window, "
-            "standardize the residuals by their own rolling std, then take "
-            "the mean of those standardized residuals over a 12-1-style "
-            "lookback (skipping the most recent month). Same direction as "
-            "vanilla momentum but with market beta residualized away — "
-            "survives the 2009-style momentum crash that punishes raw 12-1."
-        ),
-        "params": [
-            {"name": "beta_window", "type": "int", "default": 252, "min": 63, "max": 504, "step": 21,
-             "help": "Rolling window for market-beta regression (252 ≈ 1y)."},
-            {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 252, "step": 21,
-             "help": "Window for averaging standardized residuals (126 ≈ 6mo)."},
-            {"name": "skip_days", "type": "int", "default": 21, "min": 0, "max": 63, "step": 1,
-             "help": "Skip the most recent N days to avoid short-term reversal contamination."},
-        ],
-        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
-    },
-    {
-        "id": "customer_supplier_momentum",
-        "cls": rs.CustomerSupplierMomentumStrategy,
-        "cls_name": "CustomerSupplierMomentumStrategy",
-        "label": "Customer-Supplier Momentum",
-        "formula": "score(t, i) = mean over j ∈ customers(i) of ln( P[t, j] / P[t − lookback, j] )",
-        "summary": "Cohen & Frazzini (2008). Long suppliers whose major customers had strong recent returns; short those tied to weak customers. Uses a curated supplier→customer map.",
-        "params": [
-            {"name": "customer_lookback_days", "type": "int", "default": 21, "min": 5, "max": 63, "step": 1,
-             "help": "Recent-return window on the customer side (21 ≈ 1mo)."},
-            {"name": "min_customers", "type": "int", "default": 1, "min": 1, "max": 3, "step": 1,
-             "help": "Minimum customers with valid returns required to score a supplier. (Cap is 3 — only a few suppliers in the curated map have ≥4 simultaneously-valid customers, so higher values produce a near-flat signal.)"},
-        ],
-        "engine_overrides": [
-            {**_SHORT_QUANTILE_OVERRIDE, "default": 0.20,
-             "help": "Bottom fraction (suppliers tied to weak customers) sold short."},
-        ],
-    },
-    {
-        "id": "pead",
-        "cls": rs.PEADStrategy,
-        "cls_name": "PEADStrategy",
-        "label": "Post-Earnings Announcement Drift",
-        "formula": "score(t, i) = SUE(announce(i))   for t ∈ [announce(i), announce(i) + holding]",
-        "summary": "Bernard & Thomas (1989). On each ticker's announcement date set score = SUE; hold for `holding_days`. Long top decile, short bottom decile.",
-        "params": [
-            {"name": "holding_days", "type": "int", "default": 60, "min": 5, "max": 90, "step": 5,
-             "help": "Trading days to keep the SUE signal active after the announcement."},
-        ],
-        "engine_overrides": [
-            {**_SHORT_QUANTILE_OVERRIDE, "default": 0.10,
-             "help": "Bottom-decile (negative SUE) names sold short — recovers the canonical long-short PEAD sleeve."},
         ],
     },
 ]
@@ -306,8 +235,16 @@ def _load_wharton_dataset(start: str, end: str) -> ResearchDataset:
         min_history=21,
     )
     # Rename ticker columns to the dash convention used everywhere else.
+    prices = _normalize_wharton_columns(dataset.prices)
+    fundamentals = None
+    if FINANCIAL_RATIOS_PARQUET.exists():
+        fundamentals = load_financial_ratios_panel(
+            parquet_path=str(FINANCIAL_RATIOS_PARQUET),
+            daily_index=prices.index,
+            aligned_tickers=prices.columns.tolist(),
+        )
     return ResearchDataset(
-        prices=_normalize_wharton_columns(dataset.prices),
+        prices=prices,
         returns=_normalize_wharton_columns(dataset.returns),
         benchmark_returns=dataset.benchmark_returns,
         volumes=_normalize_wharton_columns(dataset.volumes),
@@ -322,6 +259,7 @@ def _load_wharton_dataset(start: str, end: str) -> ResearchDataset:
             else None
         ),
         events=dataset.events,
+        fundamentals=fundamentals,
     )
 
 
@@ -936,6 +874,17 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
             return None
         return panel.loc[window[0]:window[1]].reindex(columns=cols)
 
+    # Fundamentals is a {ratio_name: panel} dict — slice each panel to the
+    # active window/ticker subset so strategies that read it (Value Composite)
+    # see real data instead of falling through to the all-NaN early return.
+    sliced_fundamentals = None
+    if getattr(dataset, "fundamentals", None):
+        sliced_fundamentals = {
+            ratio: _opt_slice(panel)
+            for ratio, panel in dataset.fundamentals.items()
+            if panel is not None
+        }
+
     sliced = ResearchDataset(
         prices=prices,
         returns=returns,
@@ -946,6 +895,7 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
         market_caps=_opt_slice(dataset.market_caps),
         metadata=dataset.metadata.reindex(cols) if dataset.metadata is not None else None,
         events=dataset.events,
+        fundamentals=sliced_fundamentals,
     )
 
     scores = strat_instance.generate(sliced).scores
