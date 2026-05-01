@@ -173,18 +173,75 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 }
 
 /* Strategy tabs — segmented, selected state is filled amber */
+.strategy-tabs-wrap {
+  position: relative;
+  justify-self: center;
+  max-width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+}
 .strategy-tabs {
   display: flex;
   align-items: stretch;
   border: 1px solid var(--border);
   background: var(--bg);
   height: 34px;
-  justify-self: center;
   max-width: 100%;
   overflow-x: auto;
+  scroll-behavior: smooth;
   scrollbar-width: none;          /* Firefox */
 }
 .strategy-tabs::-webkit-scrollbar { display: none; }
+
+/* Phosphor-amber chevrons — only show when there's something to scroll to.
+   The wrap toggles .can-scroll-left / .can-scroll-right based on the nav's
+   scroll position; both off = content fits, both hidden. */
+.tabs-chevron {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(to left, var(--panel) 55%, transparent);
+  color: var(--amber);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+  text-shadow: 0 0 6px var(--amber-glow);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  z-index: 2;
+}
+.tabs-chevron-left  { left: 0;  background: linear-gradient(to right, var(--panel) 55%, transparent); }
+.tabs-chevron-right { right: 0; }
+.strategy-tabs-wrap.can-scroll-left  .tabs-chevron-left,
+.strategy-tabs-wrap.can-scroll-right .tabs-chevron-right {
+  opacity: 0.95;
+  pointer-events: auto;
+}
+.strategy-tabs-wrap.can-scroll-left  .tabs-chevron-left  { animation: tabs-chevron-pulse-left  1.4s ease-in-out infinite; }
+.strategy-tabs-wrap.can-scroll-right .tabs-chevron-right { animation: tabs-chevron-pulse-right 1.4s ease-in-out infinite; }
+.tabs-chevron:hover { color: var(--amber-hot); }
+.tabs-chevron:active { transform: scale(0.92); }
+@keyframes tabs-chevron-pulse-right {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(2px); }
+}
+@keyframes tabs-chevron-pulse-left {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(-2px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .strategy-tabs-wrap.can-scroll-left  .tabs-chevron-left,
+  .strategy-tabs-wrap.can-scroll-right .tabs-chevron-right { animation: none; }
+  .strategy-tabs { scroll-behavior: auto; }
+}
 .strategy-tabs button {
   background: transparent;
   border: 0;
@@ -1141,7 +1198,7 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 /* ---- Responsive ---- */
 @media (max-width: 1100px) {
   .topbar { grid-template-columns: auto 1fr auto auto; }
-  .topbar .strategy-tabs { grid-column: 1 / -1; justify-self: start; }
+  .topbar .strategy-tabs-wrap { grid-column: 1 / -1; justify-self: start; width: 100%; }
   .topbar .horizon { grid-column: 2; }
   .topbar .source-picker { grid-column: 3; }
   .app-split { grid-template-columns: 1fr; }

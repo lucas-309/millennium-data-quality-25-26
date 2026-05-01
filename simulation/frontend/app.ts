@@ -459,7 +459,35 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       btn.addEventListener("click", () => selectStrategy(s.id));
       nav.appendChild(btn);
     });
+    // Re-evaluate the chevron overflow state once the new tabs paint.
+    requestAnimationFrame(updateTabChevrons);
   }
+
+  // ---- Strategy-tabs scroll affordance ----
+  function updateTabChevrons(): void {
+    const wrap = document.getElementById("strategy-tabs-wrap");
+    const nav  = document.getElementById("strategy-tabs");
+    if (!wrap || !nav) return;
+    const max = nav.scrollWidth - nav.clientWidth;
+    const x   = nav.scrollLeft;
+    const EPS = 2; // sub-pixel tolerance
+    wrap.classList.toggle("can-scroll-left",  x > EPS);
+    wrap.classList.toggle("can-scroll-right", x < max - EPS);
+  }
+  (() => {
+    const nav = document.getElementById("strategy-tabs");
+    const left  = document.getElementById("tabs-chevron-left");
+    const right = document.getElementById("tabs-chevron-right");
+    if (!nav) return;
+    const scrollByStep = (dir: 1 | -1): void => {
+      // 78% of the visible width — keeps a tab or two of context after the jump.
+      nav.scrollBy({ left: dir * Math.round(nav.clientWidth * 0.78), behavior: "smooth" });
+    };
+    left?.addEventListener("click",  () => scrollByStep(-1));
+    right?.addEventListener("click", () => scrollByStep(1));
+    nav.addEventListener("scroll", updateTabChevrons, { passive: true });
+    window.addEventListener("resize", updateTabChevrons);
+  })();
   function renderStrategyHeader(s: Strategy): void {
     const host = $("strategy-summary");
     const formula = (s.formula || "").trim();

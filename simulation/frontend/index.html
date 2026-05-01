@@ -12,7 +12,11 @@
 
   <header class="topbar">
     <div class="brand">SIM<em>·</em>BACKTESTER</div>
-    <nav class="strategy-tabs" id="strategy-tabs"></nav>
+    <div class="strategy-tabs-wrap" id="strategy-tabs-wrap">
+      <nav class="strategy-tabs" id="strategy-tabs"></nav>
+      <button type="button" class="tabs-chevron tabs-chevron-left"  id="tabs-chevron-left"  aria-label="scroll strategies left"  tabindex="-1">◂</button>
+      <button type="button" class="tabs-chevron tabs-chevron-right" id="tabs-chevron-right" aria-label="scroll strategies right" tabindex="-1">▸</button>
+    </div>
     <div class="horizon">
       <input id="start" type="date" value="2005-01-01" />
       <span>→</span>
