@@ -913,35 +913,6 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       "bad",
       `turnover ${fmtX(o.turnover_annualized, 1)}/yr`,
     );
-    // Secondary row — Sortino, Calmar, Info Ratio, Hit Rate
-    setCard(
-      "m-sortino",
-      "m-sortino-sub",
-      fmtNum(m.sortino),
-      (m.sortino ?? 0) >= 1 ? "good" : ((m.sortino as number) < 0.3 ? "bad" : ""),
-      `downside-only Sharpe`,
-    );
-    setCard(
-      "m-calmar",
-      "m-calmar-sub",
-      fmtNum(m.calmar),
-      (m.calmar ?? 0) >= 0.5 ? "good" : ((m.calmar as number) < 0 ? "bad" : ""),
-      `ann ret / |max DD|`,
-    );
-    setCard(
-      "m-ir",
-      "m-ir-sub",
-      fmtNum(m.info_ratio),
-      (m.info_ratio ?? 0) >= 0.5 ? "good" : ((m.info_ratio as number) < 0 ? "bad" : ""),
-      `vs benchmark`,
-    );
-    setCard(
-      "m-hit",
-      "m-hit-sub",
-      fmtPct(m.hit_rate, 1),
-      (m.hit_rate ?? 0) >= 0.52 ? "good" : ((m.hit_rate as number) < 0.48 ? "bad" : ""),
-      `pos days / total`,
-    );
 
     lastRender.sim = data;
     const eqPal = chartPalette();
@@ -1900,10 +1871,6 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       ["m-return", "m-return-sub"],
       ["m-dd", "m-dd-sub"],
       ["m-tcost", "m-tcost-sub"],
-      ["m-sortino", "m-sortino-sub"],
-      ["m-calmar", "m-calmar-sub"],
-      ["m-ir", "m-ir-sub"],
-      ["m-hit", "m-hit-sub"],
     ]) {
       const valueEl = $(valueId);
       valueEl.textContent = "—";
