@@ -43,3 +43,6 @@ backtester/*.txt
 backtester/*.csv
 backtester/wharton_alias_report_summary.txt
 backtester/spy_wharton4_verification_report.txt
+
+# …except the SUE event panel — PEADStrategy reads this at runtime.
+!backtester/surprise earning.csv
