@@ -62,9 +62,32 @@ def _bucket_count(n_names: int, quantile: float, enabled: bool = True) -> int:
     return max(int(n_names * float(quantile)), 1)
 
 
-def _gross_budgets(leverage: float, has_long: bool, has_short: bool) -> tuple[float, float]:
+def _gross_budgets(
+    leverage: float,
+    has_long: bool,
+    has_short: bool,
+    long_quantile: float = 0.0,
+    short_quantile: float = 0.0,
+) -> tuple[float, float]:
+    """Split the gross budget between long and short legs.
+
+    When both legs are active, allocate proportionally to the requested
+    quantile sizes rather than splitting 50/50. The 50/50 split was creating
+    a cliff: turning on even a tiny short_quantile (e.g. 0.05) cut the long
+    leg from 100% to 50% of capital, which often gutted the long alpha
+    faster than the small short leg could compensate. Proportional
+    allocation degrades smoothly: with long=0.20 and short=0.05 the long
+    leg keeps 80% of capital; with long=short=0.20 we converge to the
+    canonical 50/50 long-short construction.
+    """
     if has_long and has_short:
-        return leverage / 2.0, leverage / 2.0
+        long_q = max(float(long_quantile), 0.0)
+        short_q = max(float(short_quantile), 0.0)
+        denom = long_q + short_q
+        if denom <= 0.0:
+            # Both legs flagged but quantiles are zero — fall back to even.
+            return leverage / 2.0, leverage / 2.0
+        return leverage * (long_q / denom), leverage * (short_q / denom)
     if has_long:
         return leverage, 0.0
     if has_short:
@@ -184,6 +207,8 @@ def build_target_weights(
             config.leverage,
             has_long=not long_signal.empty,
             has_short=(not config.long_only) and (not short_signal.empty),
+            long_quantile=config.long_quantile,
+            short_quantile=config.short_quantile,
         )
 
         row_weights.loc[long_signal.index] = _scale_side(

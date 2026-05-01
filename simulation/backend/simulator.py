@@ -88,7 +88,7 @@ def _clean_strategy_source(src: str) -> str:
 _SHORT_QUANTILE_OVERRIDE = {
     "name": "short_quantile", "type": "float", "default": 0.0,
     "min": 0.0, "max": 0.40, "step": 0.05,
-    "help": "Bottom fraction sold short (0 = long-only, >0 turns the sleeve into long-short).",
+    "help": "Bottom fraction sold short.",
 }
 
 STRATEGIES = [
