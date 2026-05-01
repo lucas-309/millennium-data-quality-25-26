@@ -11,6 +11,7 @@ from strategies.mean_reversion import MeanReversionOrderGenerator
 from strategies.momentum_strategy import MomentumOrderGenerator
 from strategies.pairs_trading import PairsTradingOrderGenerator
 from strategies.moving_avg import MovingAverageOrderGenerator
+from strategies.combined import build_default_combined
 from backtester.backtest_engine import EquityBacktestEngine
 from backtester.metrics import ExtendedMetrics
 
@@ -19,6 +20,7 @@ STRATEGIES = {
     "2": "Momentum",
     "3": "Pairs Trading",
     "4": "Moving Average",
+    "5": "Combined (all strategies, equal weight)",
 }
 
 DATA_SOURCES = {
@@ -199,6 +201,38 @@ def build_strategy(choice, tickers):
         print(">> Moving Average (5-day vs. 20-day rolling windows)")
         return MovingAverageOrderGenerator(), tickers
 
+    elif choice == "5":
+        raw_pairs = input("Pairs for the pairs sub-strategy (default: KO/PEP, V/MA): ").strip()
+        if raw_pairs:
+            pairs = []
+            for p in raw_pairs.split(","):
+                a, b = p.strip().split("/")
+                pairs.append((a.strip().upper(), b.strip().upper()))
+        else:
+            pairs = [("KO", "PEP"), ("V", "MA")]
+
+        capiq_path = input(
+            "Optional CapIQ relationship file for Customer-Supplier Momentum "
+            "(leave blank to skip): "
+        ).strip() or None
+        if capiq_path and not os.path.exists(capiq_path):
+            print(f"CapIQ file not found at {capiq_path!r}. Skipping that sub-strategy.")
+            capiq_path = None
+
+        all_tickers = list(tickers)
+        for a, b in pairs:
+            if a not in all_tickers:
+                all_tickers.append(a)
+            if b not in all_tickers:
+                all_tickers.append(b)
+
+        n_subs = 5 if capiq_path else 4
+        print(
+            f">> Combined: {n_subs} sub-strategies, equal-weight (1/{n_subs} each), "
+            f"pairs={pairs}, capiq={'on' if capiq_path else 'off'}"
+        )
+        return build_default_combined(pairs=pairs, capiq_path=capiq_path), all_tickers
+
     else:
         print("Invalid choice.")
         sys.exit(1)
@@ -209,7 +243,7 @@ def main():
     for key, name in STRATEGIES.items():
         print(f"  {key}. {name}")
 
-    choice = input("\nSelect a strategy [1-4]: ").strip()
+    choice = input("\nSelect a strategy [1-5]: ").strip()
     if choice not in STRATEGIES:
         print("Invalid selection.")
         return
