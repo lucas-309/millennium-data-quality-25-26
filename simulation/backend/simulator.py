@@ -15,8 +15,10 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 import threading
 import time
+from collections import OrderedDict
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -48,7 +50,20 @@ _STATE: Dict[str, Any] = {
     "data_source": DEFAULT_SOURCE,
     "load_token": 0,
 }
-_SIM_CACHE: Dict[str, Dict[str, Any]] = {}
+# Per-run simulation cache, bounded so a worker that runs hundreds of
+# parameter sweeps doesn't accumulate result blobs forever. Each entry is a
+# few hundred KB (date arrays + cum series + audit data); 64 entries caps
+# the cache at ~10-20 MB, well below the Fly VM's working budget.
+_SIM_CACHE_MAX = 64
+_SIM_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+# Per-source dataset cache. Holding both yfinance and wharton panels resident
+# pushes a 1GB Fly VM over its limit, so this cache is opt-in. Set
+# MILLENNIUM_DATASET_CACHE=1 in local dev (where toggling sources is the
+# common UX) to make return trips ~instant. Default is off — production VMs
+# load one source at a time and free the previous panel on switch.
+_DATASET_CACHE_ENABLED = os.environ.get("MILLENNIUM_DATASET_CACHE", "0").lower() in {"1", "true", "yes", "on"}
+_DATASET_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +184,45 @@ STRATEGIES = [
              "help": "Bottom-decile (negative SUE) names sold short — recovers the canonical long-short PEAD sleeve."},
         ],
     },
+    {
+        "id": "value_composite",
+        "cls": rs.ValueCompositeStrategy,
+        "cls_name": "ValueCompositeStrategy",
+        "label": "Value Composite",
+        "formula": "score(t, i) = z(div_yield) + z(EPS / P) + z(− log market_cap)",
+        "summary": (
+            "Fama & French (1992, 2015 — Five-Factor Model). Cross-sectional "
+            "value blend of trailing dividend yield, earnings yield (E/P), and "
+            "a small-size tilt, each cross-sectionally z-scored and summed. "
+            "Long the cheapest decile, optionally short the most expensive."
+        ),
+        "params": [
+            {"name": "trailing_days", "type": "int", "default": 252, "min": 60, "max": 756, "step": 21,
+             "help": "Window for trailing dividend sum (252 = 1y)."},
+        ],
+        "engine_overrides": [
+            {**_SHORT_QUANTILE_OVERRIDE, "default": 0.10,
+             "help": "Bottom decile (most expensive names) sold short — recovers the long-short HML sleeve."},
+        ],
+    },
+    {
+        "id": "low_volatility",
+        "cls": rs.LowVolatilityStrategy,
+        "cls_name": "LowVolatilityStrategy",
+        "label": "Low Volatility",
+        "formula": "score(t, i) = − σ_window( returns(i) )",
+        "summary": (
+            "Frazzini & Pedersen (2014, 'Betting Against Beta'); Baker, "
+            "Bradley & Wurgler (2011). The low-volatility anomaly: hold the "
+            "lowest-realized-vol names, short the highest. Score is negative "
+            "rolling-window standard deviation of daily returns."
+        ),
+        "params": [
+            {"name": "window", "type": "int", "default": 126, "min": 21, "max": 252, "step": 21,
+             "help": "Rolling window for realized volatility (126 ≈ 6mo)."},
+        ],
+        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
+    },
 ]
 STRATEGY_BY_ID = {s["id"]: s for s in STRATEGIES}
 
@@ -270,10 +324,37 @@ def warmup(start: str = "2005-01-01", end: str = None, source: str = None) -> No
         # If the requested source matches the already-loaded one, nothing to do.
         if _STATE["ready"] and _STATE.get("data_source") == source:
             return
+        # Cache hit: promote the previously-loaded dataset for this source
+        # back into _STATE without touching disk. ~instantaneous.
+        cached = _DATASET_CACHE.get(source) if _DATASET_CACHE_ENABLED else None
+        if cached is not None:
+            _STATE.update({
+                "ready": True,
+                "loading": False,
+                "message": "ready",
+                "error": None,
+                "dataset": cached["dataset"],
+                "benchmark": cached["benchmark"],
+                "date_min": cached["date_min"],
+                "date_max": cached["date_max"],
+                "tickers": cached["tickers"],
+                "universe_label": cached["universe_label"],
+                "data_source": source,
+            })
+            # Per-run cache was tied to the previous source's universe — drop it.
+            _SIM_CACHE.clear()
+            return
         token = int(_STATE.get("load_token", 0)) + 1
         _STATE["load_token"] = token
         _STATE["loading"] = True
         _STATE["ready"] = False
+        # Drop the previous dataset reference so the GC can free it before
+        # we allocate the new one — without this, peak memory during a
+        # source switch ≈ size(old) + size(new), which OOMs a 1GB Fly box.
+        if not _DATASET_CACHE_ENABLED:
+            _STATE["dataset"] = None
+            _STATE["benchmark"] = None
+            _DATASET_CACHE.clear()
         _STATE["data_source"] = source
         _STATE["message"] = f"loading {source} dataset"
         _STATE["error"] = None
@@ -301,18 +382,32 @@ def warmup(start: str = "2005-01-01", end: str = None, source: str = None) -> No
         # Switching sources invalidates the per-run cache (different prices,
         # different universe → identical request would otherwise stale-hit).
         _SIM_CACHE.clear()
+        date_min = str(dataset.prices.index.min().date())
+        date_max = str(dataset.prices.index.max().date())
+        n_tickers = len(dataset.tickers)
         with _LOCK:
             if token != _STATE.get("load_token") or _STATE.get("data_source") != source:
                 return
             _STATE.update({
                 "ready": True, "loading": False, "message": "ready",
                 "dataset": dataset, "benchmark": dataset.benchmark_returns,
-                "date_min": str(dataset.prices.index.min().date()),
-                "date_max": str(dataset.prices.index.max().date()),
-                "tickers": len(dataset.tickers),
+                "date_min": date_min, "date_max": date_max,
+                "tickers": n_tickers,
                 "universe_label": label,
                 "data_source": source,
             })
+            # Memoize for subsequent toggles back to this source — only when
+            # the env flag is set. Off by default to keep the prod VM under
+            # its memory cap; turn on locally for snappy source toggles.
+            if _DATASET_CACHE_ENABLED:
+                _DATASET_CACHE[source] = {
+                    "dataset": dataset,
+                    "benchmark": dataset.benchmark_returns,
+                    "date_min": date_min,
+                    "date_max": date_max,
+                    "tickers": n_tickers,
+                    "universe_label": label,
+                }
     except Exception as exc:
         with _LOCK:
             if token != _STATE.get("load_token") or _STATE.get("data_source") != source:
@@ -533,6 +628,10 @@ def add_tickers_to_universe(tickers: List[str]) -> Dict[str, Any]:
     with _LOCK:
         _STATE["ready"] = False
         _STATE["loading"] = False
+        # Drop the yfinance dataset cache entry so warmup() re-reads disk
+        # rather than handing back the pre-fetch panel that's missing the
+        # tickers we just added.
+        _DATASET_CACHE.pop("yfinance", None)
     _SIM_CACHE.clear()
     warmup()
 
@@ -720,6 +819,8 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
         "src_hash": hashlib.md5(source_override.encode()).hexdigest() if source_override else None,
     })
     if key in _SIM_CACHE:
+        # Touch on hit so the LRU eviction order stays meaningful.
+        _SIM_CACHE.move_to_end(key)
         return _SIM_CACHE[key]
 
     window = (start_ts, end_ts)
@@ -821,6 +922,9 @@ def run_simulation(body: Dict[str, Any]) -> Dict[str, Any]:
         },
     }
     _SIM_CACHE[key] = response
+    # Bounded LRU: evict the oldest entries until we're back within the cap.
+    while len(_SIM_CACHE) > _SIM_CACHE_MAX:
+        _SIM_CACHE.popitem(last=False)
     return response
 
 
