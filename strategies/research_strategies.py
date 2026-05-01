@@ -257,6 +257,152 @@ class LowVolatilityStrategy(SignalStrategy):
         return -vol  # higher score = lower vol = more desirable
 
 
+# Curated supplier → customers mapping for the Customer-Supplier Momentum
+# strategy. Without a CapIQ Compustat-Segment file we ship a hand-built
+# subset of well-known supplier/customer pairs that the yfinance S&P 500
+# universe covers out of the box. The strategy averages each customer's
+# recent return into a per-supplier signal — long the suppliers whose
+# customers ran up, short those whose customers lagged.
+CUSTOMER_SUPPLIER_RELATIONSHIPS: dict[str, list[str]] = {
+    # Suppliers feeding NVIDIA's GPU / accelerator stack
+    "TSM":  ["NVDA", "AAPL", "AMD", "QCOM"],
+    "ASML": ["NVDA", "INTC", "AMD", "TSM"],
+    "AMAT": ["NVDA", "TSM", "INTC"],
+    "LRCX": ["NVDA", "TSM", "INTC"],
+    "KLAC": ["NVDA", "TSM", "INTC"],
+    "MU":   ["NVDA", "AAPL", "DELL", "HPQ"],
+    "MRVL": ["NVDA", "META", "GOOGL"],
+    # Apple supply chain
+    "AVGO": ["AAPL", "GOOGL", "META"],
+    "QCOM": ["AAPL", "META", "GOOGL"],
+    "SWKS": ["AAPL"],
+    "QRVO": ["AAPL"],
+    "CRUS": ["AAPL"],
+    # Cloud / hyperscaler accelerators
+    "NVDA": ["MSFT", "META", "GOOGL", "AMZN", "ORCL"],
+    "AMD":  ["MSFT", "META", "GOOGL", "AMZN", "ORCL"],
+    # Logistics
+    "UPS":  ["AMZN", "WMT", "TGT"],
+    "FDX":  ["AMZN", "WMT"],
+    # EV / battery / auto
+    "ALB":  ["TSLA", "GM", "F"],
+    "PCAR": ["AMZN", "UPS", "FDX"],
+    # Industrials / aerospace
+    "HON":  ["BA", "LMT", "RTX"],
+    "TXT":  ["BA", "LMT"],
+    "GE":   ["BA", "LMT"],
+    "PH":   ["BA", "LMT", "CAT"],
+    # Defense supply chain
+    "LDOS": ["LMT", "RTX"],
+}
+
+
+class CustomerSupplierMomentumStrategy(SignalStrategy):
+    name = "Customer-Supplier Momentum"
+    motivation = "Suppliers whose major customers had strong recent stock returns tend to rally next; weak-customer suppliers tend to drift down."
+    economic_rationale = "Cohen & Frazzini (2008): the equity market underreacts to news that originates at a customer firm and only slowly diffuses to its suppliers along the supply chain."
+    why_it_works = "Customer-level information is public but expensive to track; a static supplier→customer map plus customer-side returns recovers the diffusion premium with low turnover."
+    why_it_fails = "Requires accurate relationship data — stale or thin maps push noise into the signal. Macro shocks that hit customers and suppliers simultaneously kill the lead/lag."
+
+    def __init__(self, customer_lookback_days: int = 21, min_customers: int = 1):
+        self.customer_lookback_days = customer_lookback_days
+        self.min_customers = min_customers
+
+    def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
+        prices = dataset.prices
+        # Customer recent return = past N-day total return on the customer's stock.
+        customer_returns = prices.pct_change(self.customer_lookback_days, fill_method=None)
+        scores = pd.DataFrame(np.nan, index=prices.index, columns=prices.columns, dtype=float)
+        for supplier, customers in CUSTOMER_SUPPLIER_RELATIONSHIPS.items():
+            if supplier not in scores.columns:
+                continue
+            tracked = [c for c in customers if c in customer_returns.columns]
+            if len(tracked) < self.min_customers:
+                continue
+            cust_panel = customer_returns[tracked]
+            valid_count = cust_panel.notna().sum(axis=1)
+            avg = cust_panel.mean(axis=1, skipna=True)
+            scores[supplier] = avg.where(valid_count >= self.min_customers)
+        return scores
+
+
+class PEADStrategy(SignalStrategy):
+    name = "Post-Earnings Announcement Drift"
+    motivation = "Stocks with positive earnings surprises drift up for weeks; negative-surprise names drift down."
+    economic_rationale = "Bernard & Thomas (1989): the market underreacts to the information content of an earnings announcement, releasing the signal gradually over the following 60 trading days."
+    why_it_works = "Standardised Unexpected Earnings (SUE) is a clean cross-sectional ranking that turns over only on announcement dates, so transaction-cost drag is bounded."
+    why_it_fails = "Crowded over time — top-decile drift has shrunk in liquid large caps; pre-announcement leakage and analyst-cluster noise eat the signal at higher frequencies."
+
+    uses_event_data = True
+    event_type = "anncdate"
+
+    _events_cache: Optional[pd.DataFrame] = None
+
+    def __init__(self, holding_days: int = 60):
+        self.holding_days = holding_days
+
+    @classmethod
+    def _load_events(cls) -> pd.DataFrame:
+        if cls._events_cache is not None:
+            return cls._events_cache
+        from pathlib import Path
+        path = Path(__file__).resolve().parent.parent / "backtester" / "surprise earning.csv"
+        if not path.exists():
+            cls._events_cache = pd.DataFrame(columns=["ticker", "anndats", "suescore"])
+            return cls._events_cache
+        df = pd.read_csv(path, usecols=["TICKER", "OFTIC", "anndats", "suescore"])
+        # OFTIC is the standard exchange ticker; TICKER is the WRDS internal id
+        # (e.g. ARRA for Agilent). Prefer OFTIC, fall back to TICKER.
+        df["ticker"] = df["OFTIC"].fillna(df["TICKER"]).astype(str).str.upper().str.replace(".", "-", regex=False)
+        df["anndats"] = pd.to_datetime(df["anndats"], errors="coerce")
+        df = df.dropna(subset=["anndats", "suescore", "ticker"])
+        df = df[["ticker", "anndats", "suescore"]].sort_values(["ticker", "anndats"])
+        cls._events_cache = df
+        return df
+
+    def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
+        events = self._load_events()
+        prices = dataset.prices
+        scores = pd.DataFrame(np.nan, index=prices.index, columns=prices.columns, dtype=float)
+        if events.empty:
+            return scores
+        index = prices.index
+        if not index.is_monotonic_increasing:
+            index = index.sort_values()
+        relevant = events[events["ticker"].isin(prices.columns)]
+        relevant = relevant[(relevant["anndats"] >= index.min()) & (relevant["anndats"] <= index.max())]
+        for ticker, sub in relevant.groupby("ticker"):
+            col = scores[ticker].copy()
+            for ann_date, sue in zip(sub["anndats"].values, sub["suescore"].values):
+                # Find the next trading day on or after the announcement.
+                pos = index.searchsorted(pd.Timestamp(ann_date), side="left")
+                if pos >= len(index):
+                    continue
+                end = min(pos + self.holding_days, len(index))
+                col.iloc[pos:end] = float(sue)
+            scores[ticker] = col
+        return scores
+
+
+class MovingAverageCrossoverStrategy(SignalStrategy):
+    name = "Moving Average Crossover"
+    motivation = "Long names whose short EMA has crossed above the long EMA — a classic trend-following signal."
+    economic_rationale = "Trend-following monetises momentum at the single-name level: when fast moving averages lead slow ones, recent demand has been outpacing supply."
+    why_it_works = "Cross-sectionally, the EMA spread captures persistent trends without the look-ahead of a fitted model; pairing with a low rebalance frequency keeps turnover manageable."
+    why_it_fails = "Choppy or mean-reverting regimes whipsaw the signal; transaction costs and signal lag can wipe out the edge."
+
+    def __init__(self, short_window: int = 50, long_window: int = 200):
+        self.short_window = short_window
+        self.long_window = long_window
+
+    def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
+        prices = dataset.prices
+        short_ema = prices.ewm(span=self.short_window, adjust=False, min_periods=self.short_window).mean()
+        long_ema = prices.ewm(span=self.long_window, adjust=False, min_periods=self.long_window).mean()
+        # Normalised EMA spread: positive = bullish trend, negative = bearish.
+        return (short_ema - long_ema).div(long_ema.replace(0, np.nan))
+
+
 class MLRidgeStrategy(SignalStrategy):
     name = "ML Ridge (rolling OLS)"
     motivation = "Let a rolling ridge regression blend momentum, short-term reversal, volatility, and market beta rather than hand-picking weights."

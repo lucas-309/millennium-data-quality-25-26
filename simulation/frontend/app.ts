@@ -33,6 +33,7 @@ interface Strategy {
   source_file: string;
   source: string;
   summary: string;
+  formula?: string;
   params: ParamSpec[];
   engine_overrides?: ParamSpec[];
 }
@@ -48,7 +49,15 @@ interface Catalog {
 interface Metrics {
   sharpe?: number | null;
   annualized_return?: number | null;
+  annualized_volatility?: number | null;
   max_drawdown?: number | null;
+  win_rate?: number | null;
+  hit_rate?: number | null;
+  sortino?: number | null;
+  calmar?: number | null;
+  profit_factor?: number | null;
+  info_ratio?: number | null;
+  beta?: number | null;
 }
 
 interface OrderSummary {
@@ -160,6 +169,7 @@ interface AppState {
   universeSize: number;
   fullUniverseSize: number;
   customTickers: string[];
+  universeMissingCount: number;
   // True when the user has explicitly narrowed the universe. Lets us
   // distinguish "empty filter = user deliberately picked 0 tickers" from
   // "empty filter = default full cache", which used to get conflated and
@@ -168,6 +178,11 @@ interface AppState {
   pinnedRuns: PinnedRun[];
   dataSource: string;
   availableSources: string[];
+  // Live code editor: per-strategy edited source, keyed by strategy id.
+  // null means "no edit active" — the catalog source is rendered.
+  editedSourceByStrategy: Record<string, string>;
+  // Whether the editor pane is currently visible (textarea up, pre hidden).
+  editing: boolean;
 }
 
 interface SimRequest {
@@ -178,6 +193,7 @@ interface SimRequest {
   tickers: string[] | null;
   start: string;
   end: string;
+  data_source?: string;
 }
 
 interface PinnedRun {
@@ -231,10 +247,13 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     universeSize: 0,
     fullUniverseSize: 0,
     customTickers: [],
+    universeMissingCount: 0,
     hasCustomFilter: false,
     pinnedRuns: loadPinnedFromStorage(),
     dataSource: "yfinance",
     availableSources: ["yfinance", "wharton"],
+    editedSourceByStrategy: {},
+    editing: false,
   };
 
   function loadPinnedFromStorage(): PinnedRun[] {
@@ -367,12 +386,40 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
     el.textContent = text;
     el.className = "statusbar" + (kind ? ` ${kind}` : "");
   }
+  function assertValidDateRange(start: string, end: string): void {
+    if (start && end && start > end) {
+      throw new Error(`start date must be on or before end date (${start} > ${end})`);
+    }
+  }
+  const sleep = (ms: number): Promise<void> =>
+    new Promise((resolve) => window.setTimeout(resolve, ms));
+  async function fetchJson<T>(url: string, init?: RequestInit, retries = 2): Promise<T> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      try {
+        const res = await fetch(url, init);
+        if (!res.ok) {
+          const err = (await res.json().catch(() => ({ error: `HTTP ${res.status}` }))) as {
+            error?: string;
+          };
+          throw new Error(err.error || `HTTP ${res.status}`);
+        }
+        return (await res.json()) as T;
+      } catch (exc) {
+        lastErr = exc;
+        if (attempt === retries) break;
+        await sleep(350 * (attempt + 1));
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+  function sourceQuery(src = state.dataSource): string {
+    return `source=${encodeURIComponent(src)}`;
+  }
 
   // ---------- Catalog & tabs ----------
   async function loadCatalog(): Promise<Catalog> {
-    const res = await fetch("/api/catalog");
-    if (!res.ok) throw new Error(`catalog HTTP ${res.status}`);
-    return (await res.json()) as Catalog;
+    return fetchJson<Catalog>("/api/catalog");
   }
   function renderStrategyTabs(): void {
     const nav = $("strategy-tabs");
@@ -389,14 +436,34 @@ type StatusKind = "ready" | "loading" | "error" | "" | undefined;
       nav.appendChild(btn);
     });
   }
+  function renderStrategyHeader(s: Strategy): void {
+    const host = $("strategy-summary");
+    const formula = (s.formula || "").trim();
+    const summary = (s.summary || "").trim();
+    if (!formula && !summary) {
+      host.textContent = "";
+      return;
+    }
+    const formulaHtml = formula
+      ? `<span class="formula">${escapeHtml(formula)}</span>`
+      : "";
+    const captionHtml = summary
+      ? `<span class="formula-caption">${escapeHtml(summary)}</span>`
+      : "";
+    host.innerHTML = `${formulaHtml}${captionHtml}`;
+  }
+
   function selectStrategy(id: string): void {
     const s = state.catalog!.strategies.find((x) => x.id === id);
     if (!s) return;
     state.currentStrategy = s;
+    // Switching tabs always exits editor mode — but per-strategy edits are
+    // preserved in editedSourceByStrategy and re-applied on return.
+    state.editing = false;
     document.querySelectorAll<HTMLButtonElement>("#strategy-tabs button").forEach((b) => {
       b.classList.toggle("active", b.dataset.id === id);
     });
-    $("strategy-summary").textContent = s.summary;
+    renderStrategyHeader(s);
     renderStrategyParams();
     renderOverrideParams();
     renderEngineParams();
@@ -636,9 +703,10 @@ ${liveCfgLines}
 ${fixedLines}
 )`;
 
+    const classSource = state.editedSourceByStrategy[s.id] ?? s.source;
     const full =
 `# ── class source — ${s.source_file}
-${s.source}
+${classSource}
 
 # ── your run (live values below)
 ${stratCall}
@@ -653,8 +721,103 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     const el = $("code-live");
     el.textContent = full;
     Prism.highlightElement(el);
+    syncEditButtons();
     updateSizing();
   }
+
+  // ---------- Live code editor ----------
+  function syncEditButtons(): void {
+    const s = state.currentStrategy;
+    const hasEdit = !!(s && state.editedSourceByStrategy[s.id] != null);
+    const status = $("code-edit-status");
+    const toggleBtn = $("code-edit-toggle") as HTMLButtonElement;
+    const runBtn = $("code-edit-run") as HTMLButtonElement;
+    const revertBtn = $("code-edit-revert") as HTMLButtonElement;
+    const editor = $("code-editor") as HTMLTextAreaElement;
+    const pre = document.querySelector(".code-block") as HTMLElement | null;
+
+    if (state.editing) {
+      toggleBtn.textContent = "Cancel";
+      runBtn.hidden = false;
+      revertBtn.hidden = !hasEdit;
+      editor.hidden = false;
+      if (pre) pre.hidden = true;
+      status.textContent = "editing — Cmd+Enter to run";
+    } else {
+      toggleBtn.textContent = hasEdit ? "Edit (modified)" : "Edit";
+      runBtn.hidden = true;
+      revertBtn.hidden = !hasEdit;
+      editor.hidden = true;
+      if (pre) pre.hidden = false;
+      status.textContent = hasEdit ? "running edited code" : "";
+    }
+  }
+  function classSourceForCurrent(): string {
+    const s = state.currentStrategy!;
+    return state.editedSourceByStrategy[s.id] ?? s.source;
+  }
+  function enterEditMode(): void {
+    const s = state.currentStrategy;
+    if (!s) return;
+    const editor = $("code-editor") as HTMLTextAreaElement;
+    editor.value = classSourceForCurrent();
+    state.editing = true;
+    syncEditButtons();
+    editor.focus();
+  }
+  function exitEditMode(): void {
+    state.editing = false;
+    syncEditButtons();
+  }
+  function runEditedCode(): void {
+    const s = state.currentStrategy;
+    if (!s) return;
+    const editor = $("code-editor") as HTMLTextAreaElement;
+    const src = editor.value;
+    if (!src.trim()) {
+      toast("editor is empty — nothing to run", true);
+      return;
+    }
+    state.editedSourceByStrategy[s.id] = src;
+    state.editing = false;
+    renderLiveCode();
+    scheduleRun();
+  }
+  function revertEdit(): void {
+    const s = state.currentStrategy;
+    if (!s) return;
+    delete state.editedSourceByStrategy[s.id];
+    state.editing = false;
+    renderLiveCode();
+    scheduleRun();
+  }
+  ($("code-edit-toggle") as HTMLButtonElement).addEventListener("click", () => {
+    if (state.editing) exitEditMode();
+    else enterEditMode();
+  });
+  ($("code-edit-run") as HTMLButtonElement).addEventListener("click", runEditedCode);
+  ($("code-edit-revert") as HTMLButtonElement).addEventListener("click", revertEdit);
+  ($("code-editor") as HTMLTextAreaElement).addEventListener("keydown", (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === "Enter") {
+      ev.preventDefault();
+      runEditedCode();
+      return;
+    }
+    if (ev.key === "Escape") {
+      ev.preventDefault();
+      exitEditMode();
+      return;
+    }
+    // Tab inserts indent rather than moving focus.
+    if (ev.key === "Tab") {
+      ev.preventDefault();
+      const ta = ev.currentTarget as HTMLTextAreaElement;
+      const s = ta.selectionStart;
+      const e = ta.selectionEnd;
+      ta.value = ta.value.slice(0, s) + "    " + ta.value.slice(e);
+      ta.selectionStart = ta.selectionEnd = s + 4;
+    }
+  });
 
   // ---------- Run ----------
   let runTimer: number | null = null;
@@ -682,35 +845,33 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     setStatus("running simulation…", "loading");
     try {
       const p = readParams();
+      assertValidDateRange(p.start, p.end);
       // Send tickers:null only when NO custom filter is active. An empty
       // array with hasCustomFilter=true means "user explicitly narrowed
       // to nothing" and should bubble up as a backend error, not silently
       // flip back to the full universe.
       const tickers = state.hasCustomFilter ? p.tickers : null;
-      const body = {
-        strategy_id: state.currentStrategy!.id,
+      const sid = state.currentStrategy!.id;
+      const editedSrc = state.editedSourceByStrategy[sid];
+      const body: Record<string, unknown> = {
+        strategy_id: sid,
         strategy_params: p.strategyParams,
         engine_params: p.engineParams,
         engine_overrides: p.engineOverrides,
         tickers,
         start: p.start,
         end: p.end,
+        data_source: state.dataSource,
       };
+      if (editedSrc != null) body.strategy_source_override = editedSrc;
       const t0 = performance.now();
-      const res = await fetch("/api/simulate", {
+      const data = await fetchJson<SimulationResult>("/api/simulate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const err = (await res.json().catch(() => ({ error: `HTTP ${res.status}` }))) as {
-          error?: string;
-        };
-        throw new Error(err.error || `HTTP ${res.status}`);
-      }
-      const data = (await res.json()) as SimulationResult;
+      }, 1);
       const elapsed = performance.now() - t0;
-      lastRender.simPayload = body;
+      lastRender.simPayload = body as unknown as SimRequest;
       renderResults(data);
       setStatus(`ready · last run ${(elapsed / 1000).toFixed(2)}s`, "ready");
     } catch (exc) {
@@ -770,6 +931,35 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       fmtPct(o.tcost_drag_annualized),
       "bad",
       `turnover ${fmtX(o.turnover_annualized, 1)}/yr`,
+    );
+    // Secondary row — Sortino, Calmar, Info Ratio, Hit Rate
+    setCard(
+      "m-sortino",
+      "m-sortino-sub",
+      fmtNum(m.sortino),
+      (m.sortino ?? 0) >= 1 ? "good" : ((m.sortino as number) < 0.3 ? "bad" : ""),
+      `downside-only Sharpe`,
+    );
+    setCard(
+      "m-calmar",
+      "m-calmar-sub",
+      fmtNum(m.calmar),
+      (m.calmar ?? 0) >= 0.5 ? "good" : ((m.calmar as number) < 0 ? "bad" : ""),
+      `ann ret / |max DD|`,
+    );
+    setCard(
+      "m-ir",
+      "m-ir-sub",
+      fmtNum(m.info_ratio),
+      (m.info_ratio ?? 0) >= 0.5 ? "good" : ((m.info_ratio as number) < 0 ? "bad" : ""),
+      `vs benchmark`,
+    );
+    setCard(
+      "m-hit",
+      "m-hit-sub",
+      fmtPct(m.hit_rate, 1),
+      (m.hit_rate ?? 0) >= 0.52 ? "good" : ((m.hit_rate as number) < 0.48 ? "bad" : ""),
+      `pos days / total`,
     );
 
     lastRender.sim = data;
@@ -835,6 +1025,15 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     renderPinnedList();
     if (data.universe && typeof data.universe.n_tickers === "number") {
       state.universeSize = data.universe.n_tickers;
+      state.universeMissingCount = data.universe.missing_from_cache?.length || 0;
+      if (data.universe.custom) {
+        state.hasCustomFilter = true;
+        state.customTickers = (data.universe.selected || []).slice();
+      } else {
+        state.hasCustomFilter = false;
+        state.customTickers = [];
+      }
+      refreshUniverseStatus();
       updateSizing();
     }
   }
@@ -877,6 +1076,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       JSON.stringify(p.engine_overrides),
       p.start,
       p.end,
+      p.data_source || "yfinance",
       tickerHash,
     ].join("|");
   }
@@ -1028,11 +1228,9 @@ result  = run_weight_backtest(dataset.prices, weights, config,
   function renderAudit(a: SurvivorshipAudit): void {
     const sub = $("audit-sub");
     const statsEl = $("audit-stats");
-    const noteEl = $("audit-note");
     if (!a || !a.universe_size) {
       sub.textContent = "no audit available";
       statsEl.innerHTML = "";
-      noteEl.textContent = "";
       Plotly.purge("chart-audit");
       return;
     }
@@ -1054,7 +1252,6 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       <div class="a-cell"><div class="a-label">Post-start inceptions</div><div class="a-value ${inceptionCls}">${a.inception_biased_count}</div></div>
       <div class="a-cell"><div class="a-label">Delistings in window</div><div class="a-value ${delistCls}">${a.delisted_within_window_count}</div></div>
     `;
-    noteEl.textContent = a.structural_bias_note || "";
 
     const ts: AuditTimeseries = a.active_timeseries || { dates: [], counts: [] };
     const auPal = chartPalette();
@@ -1096,15 +1293,14 @@ result  = run_weight_backtest(dataset.prices, weights, config,
 
   // ---------- Data inspector ----------
   async function loadDataOverview(): Promise<void> {
-    const res = await fetch("/api/data");
-    if (!res.ok) throw new Error(`data HTTP ${res.status}`);
-    state.dataOverview = (await res.json()) as DataOverview;
+    state.dataOverview = await fetchJson<DataOverview>(`/api/data?${sourceQuery()}`);
     $("data-sub").textContent = `${state.dataOverview.n_tickers} tickers · ${state.dataOverview.source_file}`;
     renderTickerTable();
   }
   function renderTickerTable(): void {
     const body = $("ticker-tbody");
     body.innerHTML = "";
+    if (!state.dataOverview) return;
     const q = state.tickerFilter.toLowerCase();
     const rows = state.dataOverview!.tickers.filter(
       (r) =>
@@ -1151,9 +1347,9 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     const right = $("data-right");
     right.innerHTML = `<div class="data-empty">Loading ${tic}…</div>`;
     try {
-      const res = await fetch(`/api/data/ticker/${encodeURIComponent(tic)}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const d = (await res.json()) as TickerDetail;
+      const d = await fetchJson<TickerDetail>(
+        `/api/data/ticker/${encodeURIComponent(tic)}?${sourceQuery()}`,
+      );
       renderTickerDetail(d);
     } catch (exc) {
       const msg = exc instanceof Error ? exc.message : String(exc);
@@ -1254,7 +1450,10 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       status.textContent = `all cached (${state.fullUniverseSize || "?"})`;
     } else {
       const n = state.customTickers.length;
-      status.textContent = `custom: ${n} ticker${n === 1 ? "" : "s"}`;
+      const missing = state.universeMissingCount
+        ? ` · ${state.universeMissingCount} ignored`
+        : "";
+      status.textContent = `custom: ${n} ticker${n === 1 ? "" : "s"}${missing}`;
     }
   }
   const universeInput = document.getElementById("universe-input") as HTMLTextAreaElement | null;
@@ -1270,6 +1469,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       }
       state.customTickers = tickers;
       state.hasCustomFilter = true;
+      state.universeMissingCount = 0;
       refreshUniverseStatus();
       updateSizing();
       scheduleRun();
@@ -1280,6 +1480,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       universeInput.value = "";
       state.customTickers = [];
       state.hasCustomFilter = false;
+      state.universeMissingCount = 0;
       refreshUniverseStatus();
       updateSizing();
       scheduleRun();
@@ -1311,6 +1512,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       const missing = excluded.length - matched;
       state.customTickers = complement;
       state.hasCustomFilter = true;
+      state.universeMissingCount = missing;
       const suffix = missing ? ` · ${missing} not in cache (ignored)` : "";
       toast(
         `excluded ${matched} · running on ${complement.length} ticker${complement.length === 1 ? "" : "s"}${suffix}`,
@@ -1371,18 +1573,27 @@ result  = run_weight_backtest(dataset.prices, weights, config,
   }
 
   // ---------- Boot ----------
-  async function waitReady(): Promise<boolean> {
+  async function waitReady(targetSource?: string, maxWaitMs = 0): Promise<boolean> {
+    const started = performance.now();
+    let misses = 0;
     while (true) {
+      if (maxWaitMs && performance.now() - started > maxWaitMs) {
+        const label = targetSource ? sourceLabel(targetSource) : "backend";
+        setStatus(`error: timed out loading ${label}`, "error");
+        return false;
+      }
       try {
-        const res = await fetch("/api/status");
-        const s = (await res.json()) as StatusResponse;
-        if (s.error) {
+        const url = targetSource ? `/api/status?${sourceQuery(targetSource)}` : "/api/status";
+        const s = await fetchJson<StatusResponse>(url, undefined, 0);
+        misses = 0;
+        const sourceMatches = !targetSource || s.data_source === targetSource;
+        if (s.error && sourceMatches) {
           setStatus(`error: ${s.error}`, "error");
           return false;
         }
-        if (s.data_source) state.dataSource = s.data_source;
+        if (s.data_source && sourceMatches) state.dataSource = s.data_source;
         if (s.available_sources) state.availableSources = s.available_sources;
-        if (s.ready) {
+        if (s.ready && sourceMatches) {
           setStatus(`ready · ${s.tickers} tickers · ${s.date_min} → ${s.date_max}`, "ready");
           const startEl = $("start") as HTMLInputElement;
           const endEl = $("end") as HTMLInputElement;
@@ -1399,12 +1610,16 @@ result  = run_weight_backtest(dataset.prices, weights, config,
           updateUniverseEditorMode();
           return true;
         }
-        setStatus(`loading · ${s.message}`, "loading");
+        if (s.ready && targetSource) {
+          setStatus(`loading · waiting for ${sourceLabel(targetSource)}`, "loading");
+        } else {
+          setStatus(`loading · ${s.message || "dataset"}`, "loading");
+        }
       } catch (exc) {
-        setStatus("backend unreachable", "error");
-        return false;
+        misses += 1;
+        setStatus(`backend unreachable · retrying (${misses})`, misses > 5 ? "error" : "loading");
       }
-      await new Promise((r) => setTimeout(r, 1000));
+      await sleep(Math.min(1000 + misses * 250, 2500));
     }
   }
 
@@ -1443,19 +1658,68 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       fetchBtn.disabled = false;
     }
   }
+  function setSourceSelectorBusy(busy: boolean): void {
+    const sel = document.getElementById("source-select") as HTMLSelectElement | null;
+    if (sel) sel.disabled = busy;
+  }
+  function showSourceLoadingState(target: string): void {
+    const label = sourceLabel(target);
+    $("universe-label").textContent = `universe: loading ${label}`;
+    $("universe-status").textContent = "loading…";
+    $("strategy-sizing").textContent = "loading universe…";
+    $("data-sub").textContent = `loading ${label} data…`;
+    for (const [valueId, subId] of [
+      ["m-sharpe", "m-sharpe-sub"],
+      ["m-return", "m-return-sub"],
+      ["m-dd", "m-dd-sub"],
+      ["m-tcost", "m-tcost-sub"],
+      ["m-sortino", "m-sortino-sub"],
+      ["m-calmar", "m-calmar-sub"],
+      ["m-ir", "m-ir-sub"],
+      ["m-hit", "m-hit-sub"],
+    ]) {
+      const valueEl = $(valueId);
+      valueEl.textContent = "—";
+      valueEl.className = "m-value";
+      $(subId).textContent = "";
+    }
+    $("audit-sub").textContent = `loading ${label} universe`;
+    $("audit-stats").innerHTML = "";
+    Plotly.purge("chart-equity");
+    Plotly.purge("chart-audit");
+    state.dataOverview = null;
+    state.selectedTicker = null;
+    renderTickerTable();
+    const right = document.getElementById("data-right");
+    if (right) {
+      right.innerHTML = `<div class="data-empty">Loading ${escapeHtml(label)} data…</div>`;
+    }
+  }
   async function switchDataSource(target: string): Promise<void> {
     if (target === state.dataSource) return;
+    const previousSource = state.dataSource;
     state.dataSource = target;
+    updateSourceSelector();
+    updateUniverseEditorMode();
+    setSourceSelectorBusy(true);
+    showSourceLoadingState(target);
     setStatus(`switching to ${sourceLabel(target)}…`, "loading");
     setProgress(15);
     try {
-      const res = await fetch("/api/warmup", {
+      await fetchJson<StatusResponse>("/api/warmup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ source: target }),
-      });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
+      }, 1);
+      // Now wait for a worker that is actually ready on the requested
+      // source. Production can have more than one backend worker, so a
+      // generic "ready" status is not enough after a source change.
+      const ok = await waitReady(target, 120000);
+      if (!ok) {
+        state.dataSource = previousSource;
+        updateSourceSelector();
+        updateUniverseEditorMode();
+        return;
       }
       // Clear pinned runs — their tickers / dates may not exist in the
       // new universe, and the chart palette is shared. Toast so the user
@@ -1467,10 +1731,6 @@ result  = run_weight_backtest(dataset.prices, weights, config,
         renderPinnedList();
         toast(`cleared ${n} pinned run${n === 1 ? "" : "s"} — new data source`, false, 4000);
       }
-      // Now wait for the backend to finish reloading. Reuse waitReady's
-      // polling logic so the rest of the boot flow stays consistent.
-      const ok = await waitReady();
-      if (!ok) return;
       state.catalog = await loadCatalog();
       const stillSelectable = state.currentStrategy
         ? state.catalog.strategies.find((s) => s.id === state.currentStrategy!.id)
@@ -1492,9 +1752,13 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       loadDataOverview().catch((e) => console.error(e));
     } catch (exc) {
       const msg = exc instanceof Error ? exc.message : String(exc);
+      state.dataSource = previousSource;
+      updateSourceSelector();
+      updateUniverseEditorMode();
       toast(`source switch failed: ${msg}`, true, 6000);
       setStatus(`error: ${msg}`, "error");
     } finally {
+      setSourceSelectorBusy(false);
       progressDone();
     }
   }
@@ -1509,10 +1773,16 @@ result  = run_weight_backtest(dataset.prices, weights, config,
   (async (): Promise<void> => {
     setStatus("connecting…", "loading");
     renderPinnedList();
-    if (!(await waitReady())) return;
-    state.catalog = await loadCatalog();
-    renderStrategyTabs();
-    selectStrategy(state.catalog.strategies[0].id);
-    loadDataOverview().catch((e) => console.error(e));
+    try {
+      if (!(await waitReady())) return;
+      state.catalog = await loadCatalog();
+      renderStrategyTabs();
+      selectStrategy(state.catalog.strategies[0].id);
+      loadDataOverview().catch((e) => console.error(e));
+    } catch (exc) {
+      const msg = exc instanceof Error ? exc.message : String(exc);
+      toast(`startup failed: ${msg}`, true, 6000);
+      setStatus(`error: ${msg}`, "error");
+    }
   })();
 })();
