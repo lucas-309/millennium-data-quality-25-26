@@ -140,13 +140,52 @@ def max_diversification_weights(
 # ---------------------------------------------------------------------------
 # Model weight computation (anti-lookahead dispatcher)
 # ---------------------------------------------------------------------------
+def _cap_and_renormalize(weights: pd.Series, max_weight: float) -> pd.Series:
+    """Cap any single sleeve's weight at `max_weight` and water-fill the
+    excess equally across the uncapped sleeves. Equal redistribution avoids
+    the oscillation you get with proportional redistribution when only one
+    or two free sleeves carry non-zero weight (proportional dumps all the
+    excess on the largest, which then exceeds the cap on the next pass).
+    """
+    w = weights.astype(float).copy()
+    n = len(w)
+    if n == 0 or w.sum() <= 0:
+        return w
+    # Infeasible cap: max_weight * n < 1 means even all-at-cap doesn't fill
+    # the budget — fall back to uniform.
+    if max_weight * n < 1.0 - 1e-9:
+        return pd.Series(1.0 / n, index=w.index)
+    w = w / w.sum()
+    capped = pd.Series(False, index=w.index)
+    for _ in range(n + 1):
+        over = (w > max_weight + 1e-12) & (~capped)
+        if not over.any():
+            break
+        # Cap any newly-over sleeves and lock them in.
+        excess = (w[over] - max_weight).sum()
+        w[over] = max_weight
+        capped = capped | over
+        free = ~capped
+        if not free.any():
+            break
+        # Equal water-fill across uncapped sleeves.
+        w[free] = w[free] + excess / int(free.sum())
+    return w
+
+
 def compute_model_weights(
     sleeve_returns: pd.DataFrame,
     model: ModelSpec,
     as_of_date: pd.Timestamp,
     min_obs: int = 126,
+    max_sleeve_weight: float = 0.20,
 ) -> pd.Series:
-    """Compute sleeve weights for one model using only data up to as_of_date."""
+    """Compute sleeve weights for one model using only data up to as_of_date.
+
+    `max_sleeve_weight` caps any single sleeve's allocation. With ~10 sleeves
+    the equal-weight baseline is 10%, so a 20% cap allows real conviction
+    while preventing structurally-low-vol sleeves from running away.
+    """
     history = sleeve_returns.loc[:as_of_date]
     if len(history) < min_obs:
         return equal_weight(sleeve_returns.columns)
@@ -156,21 +195,20 @@ def compute_model_weights(
 
     if model.method == "inverse_vol":
         vols = history.std()
-        return inverse_volatility_weight(vols)
-
-    if model.method == "hrp":
-        return hierarchical_risk_parity(history)
-
-    cov = shrinkage_covariance(history)
-
-    if model.method == "risk_parity":
-        return risk_parity_weights(cov)
-    if model.method == "min_variance":
-        return minimum_variance_weights(cov)
-    if model.method == "max_diversification":
-        return max_diversification_weights(cov)
-
-    raise ValueError(f"Unknown method: {model.method}")
+        weights = inverse_volatility_weight(vols)
+    elif model.method == "hrp":
+        weights = hierarchical_risk_parity(history)
+    else:
+        cov = shrinkage_covariance(history)
+        if model.method == "risk_parity":
+            weights = risk_parity_weights(cov)
+        elif model.method == "min_variance":
+            weights = minimum_variance_weights(cov)
+        elif model.method == "max_diversification":
+            weights = max_diversification_weights(cov)
+        else:
+            raise ValueError(f"Unknown method: {model.method}")
+    return _cap_and_renormalize(weights, max_sleeve_weight)
 
 
 # ---------------------------------------------------------------------------
