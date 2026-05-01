@@ -635,26 +635,20 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 }
 .code-editor::selection { background: var(--amber-soft); color: var(--text); }
 
-/* ---- Metrics strip — 4×2 grid: hero row glows big, secondary row tighter ---- */
+/* ---- Metrics strip — single hero row of 4 ---- */
 .metrics-strip {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  grid-auto-rows: auto;
   gap: 0;
   background: var(--panel);
   border: 1px solid var(--border);
 }
 .m-card {
-  padding: 12px 22px 14px;
+  padding: 14px 22px 16px;
   border-right: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
   position: relative;
 }
-.m-card:nth-child(4n) { border-right: 0; }
-.m-card:nth-last-child(-n+4) { border-bottom: 0; }
-.m-card.secondary {
-  background: var(--panel-2);
-}
+.m-card:last-child { border-right: 0; }
 .m-card::before {
   content: "";
   position: absolute;
@@ -675,16 +669,16 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
 }
 .m-value {
   font-family: var(--font-mono);
-  font-size: 26px;
+  font-size: 42px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   color: var(--amber);
   line-height: 1.0;
   letter-spacing: -0.02em;
-  text-shadow: 0 0 10px var(--amber-glow);
+  text-shadow: 0 0 14px var(--amber-glow);
 }
-.m-value.good { color: var(--gain); text-shadow: 0 0 10px rgba(105,201,122,0.5); }
-.m-value.bad  { color: var(--loss); text-shadow: 0 0 10px rgba(224,112,80,0.5); }
+.m-value.good { color: var(--gain); text-shadow: 0 0 14px rgba(105,201,122,0.5); }
+.m-value.bad  { color: var(--loss); text-shadow: 0 0 14px rgba(224,112,80,0.5); }
 .m-sub {
   font-family: var(--font-mono);
   font-size: 10.5px;
