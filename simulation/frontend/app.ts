@@ -983,6 +983,8 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     const liveLabel = state.currentStrategy
       ? autoRunLabel(state.currentStrategy, lastRender.simPayload)
       : "Strategy";
+    // Two-pane layout: equity on top (y), drawdown below (y2).
+    // Plotly handles the shared x-axis automatically when traces share xaxis: "x".
     const traces: Record<string, unknown>[] = [
       {
         x: data.dates,
@@ -990,6 +992,8 @@ result  = run_weight_backtest(dataset.prices, weights, config,
         name: "Equal-weight universe",
         type: "scatter",
         mode: "lines",
+        xaxis: "x",
+        yaxis: "y",
         line: { color: eqPal.k, width: 1.5, dash: "dot" },
         hovertemplate: "%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>Benchmark</extra>",
       },
@@ -1002,10 +1006,28 @@ result  = run_weight_backtest(dataset.prices, weights, config,
         name: pinned.label,
         type: "scatter",
         mode: "lines",
+        xaxis: "x",
+        yaxis: "y",
         line: { color, width: 1.6 },
         opacity: 0.85,
         hovertemplate: `%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>${escapeHtml(pinned.label)}</extra>`,
       });
+      // Pinned drawdown trace on the bottom pane, dimmer matching color.
+      if (pinned.cumulativeDrawdown && pinned.cumulativeDrawdown.length) {
+        traces.push({
+          x: pinned.dates,
+          y: pinned.cumulativeDrawdown,
+          name: `${pinned.label} · DD`,
+          type: "scatter",
+          mode: "lines",
+          xaxis: "x",
+          yaxis: "y2",
+          line: { color, width: 1.0 },
+          opacity: 0.5,
+          showlegend: false,
+          hovertemplate: `%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>${escapeHtml(pinned.label)} DD</extra>`,
+        });
+      }
     }
     traces.push({
       x: data.dates,
@@ -1013,29 +1035,68 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       name: `${liveLabel} · live`,
       type: "scatter",
       mode: "lines",
+      xaxis: "x",
+      yaxis: "y",
       line: { color: eqPal.q, width: 2.2 },
       hovertemplate: `%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>${escapeHtml(liveLabel)}</extra>`,
     });
+    // Live drawdown — filled to zero in loss-red.
+    const liveDD = (data.cumulative_drawdown || []).map((v) => v * 100);
+    if (liveDD.length) {
+      traces.push({
+        x: data.dates,
+        y: liveDD,
+        name: "Drawdown",
+        type: "scatter",
+        mode: "lines",
+        xaxis: "x",
+        yaxis: "y2",
+        line: { color: cssVar("--loss"), width: 1.4 },
+        fill: "tozeroy",
+        fillcolor: "rgba(224,112,80,0.18)",
+        showlegend: false,
+        hovertemplate: "%{x|%Y-%m-%d}<br>%{y:.1f}%<extra>Drawdown</extra>",
+      });
+    }
     Plotly.react(
       "chart-equity",
       traces,
       {
         ...eqLayout,
+        // Top pane: equity curve, ~70% of vertical space.
         yaxis: {
           ...(eqLayout.yaxis as Record<string, unknown>),
           title: "Cumulative return (%)",
           tickformat: ",.0f",
           ticksuffix: "%",
           automargin: true,
+          domain: [0.32, 1.0],
+        },
+        // Bottom pane: drawdown, ~28%, tied to the same x-axis.
+        yaxis2: {
+          ...(eqLayout.yaxis as Record<string, unknown>),
+          title: "Drawdown (%)",
+          tickformat: ",.0f",
+          ticksuffix: "%",
+          automargin: true,
+          domain: [0, 0.24],
+          rangemode: "tozero",
+          // Drawdown is always ≤0; flip the autorange so 0 is at top, deepest at bottom.
+          autorange: "reversed",
+          zeroline: true,
+          zerolinecolor: cssVar("--border-strong"),
+          zerolinewidth: 1,
         },
         xaxis: {
           ...(eqLayout.xaxis as Record<string, unknown>),
           automargin: true,
+          anchor: "y2",
         },
       },
       plotConfig,
     );
 
+    renderMonthlyHeatmap(data.monthly_returns || []);
     renderAudit(data.survivorship_audit || {});
     renderPinnedList();
     if (data.universe && typeof data.universe.n_tickers === "number") {
@@ -1123,6 +1184,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       colorIdx,
       dates: lastRender.sim.dates.slice(),
       cumulativeNet: lastRender.sim.cumulative_net.map((v) => v * 100),
+      cumulativeDrawdown: (lastRender.sim.cumulative_drawdown || []).map((v) => v * 100),
       payload: JSON.parse(JSON.stringify(lastRender.simPayload)) as SimRequest,
       metricsNet: lastRender.sim.metrics_net,
     };
@@ -1238,6 +1300,109 @@ result  = run_weight_backtest(dataset.prices, weights, config,
       );
       host.appendChild(chip);
     }
+  }
+
+  function renderMonthlyHeatmap(monthly: MonthlyReturn[]): void {
+    const host = document.getElementById("chart-monthly");
+    if (!host) return;
+    if (!monthly || monthly.length === 0) {
+      Plotly.purge("chart-monthly");
+      return;
+    }
+    // Pivot the long-form payload into a year × month grid (most recent year on top).
+    const years = Array.from(new Set(monthly.map((m) => m.year))).sort((a, b) => a - b);
+    const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const grid: (number | null)[][] = years.map(() => Array(12).fill(null));
+    for (const cell of monthly) {
+      const yi = years.indexOf(cell.year);
+      if (yi >= 0) grid[yi][cell.month - 1] = cell.ret;
+    }
+    // Cell text: "+3.4%", "-1.8%", or "" for missing.
+    const text: string[][] = grid.map((row) =>
+      row.map((v) =>
+        v == null ? "" : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`,
+      ),
+    );
+    // Custom red→black→green colorscale anchored to 0; aligns with the
+    // amber-on-warm-black palette without using cyan/blue elsewhere on screen.
+    const palette = chartPalette();
+    const layout = plotLayout();
+    Plotly.react(
+      "chart-monthly",
+      [
+        {
+          z: grid.map((row) => row.map((v) => (v == null ? null : v * 100))),
+          x: months,
+          y: years.map((y) => String(y)),
+          type: "heatmap",
+          colorscale: [
+            [0,    "#7a1f1f"],
+            [0.25, "#3a1010"],
+            [0.5,  palette.bg],
+            [0.75, "#1f4a25"],
+            [1,    "#3a8a4a"],
+          ],
+          zmid: 0,
+          hovertemplate: "%{y} %{x}: %{z:.1f}%<extra></extra>",
+          showscale: false,
+          xgap: 2,
+          ygap: 2,
+        },
+        {
+          // Cell-text overlay using a transparent scattergl trick:
+          // Plotly's heatmap doesn't support `text=` natively for cells,
+          // so we render annotations via layout.annotations below instead.
+          type: "scatter",
+          x: [],
+          y: [],
+          mode: "markers",
+          showlegend: false,
+        },
+      ],
+      {
+        ...layout,
+        margin: { t: 8, r: 8, b: 28, l: 60 },
+        height: Math.max(160, years.length * 28 + 60),
+        xaxis: {
+          ...(layout.xaxis as Record<string, unknown>),
+          side: "top",
+          tickfont: { size: 11, color: palette.inkSoft },
+          fixedrange: true,
+        },
+        yaxis: {
+          ...(layout.yaxis as Record<string, unknown>),
+          autorange: "reversed",
+          tickfont: { size: 11, color: palette.inkSoft },
+          fixedrange: true,
+          automargin: true,
+        },
+        annotations: years.flatMap((y, yi) =>
+          months.map((mo, mi) => {
+            const v = grid[yi][mi];
+            if (v == null) return null;
+            const txt = `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`;
+            return {
+              x: mo,
+              y: String(y),
+              text: txt,
+              showarrow: false,
+              font: {
+                family: "IBM Plex Mono, JetBrains Mono, monospace",
+                size: 10,
+                color:
+                  Math.abs(v) < 0.005
+                    ? palette.inkSoft
+                    : v > 0
+                      ? "#bdf3c0"
+                      : "#f5c8be",
+              },
+            };
+          }).filter((a) => a !== null),
+        ).filter((a) => a !== null),
+      },
+      { displayModeBar: false, responsive: true },
+    );
+    void text;
   }
 
   function renderAudit(a: SurvivorshipAudit): void {
@@ -1701,6 +1866,7 @@ result  = run_weight_backtest(dataset.prices, weights, config,
     $("audit-sub").textContent = `loading ${label} universe`;
     $("audit-stats").innerHTML = "";
     Plotly.purge("chart-equity");
+    Plotly.purge("chart-monthly");
     Plotly.purge("chart-audit");
     state.dataOverview = null;
     state.selectedTicker = null;
