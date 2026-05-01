@@ -457,10 +457,10 @@ class PEADStrategy(SignalStrategy):
 
 
 class MovingAverageCrossoverStrategy(SignalStrategy):
-    name = "Moving Average Crossover"
-    motivation = "Long names whose short EMA has crossed above the long EMA — a classic trend-following signal."
-    economic_rationale = "Trend-following monetises momentum at the single-name level: when fast moving averages lead slow ones, recent demand has been outpacing supply."
-    why_it_works = "Cross-sectionally, the EMA spread captures persistent trends without the look-ahead of a fitted model; pairing with a low rebalance frequency keeps turnover manageable."
+    name = "Simple Moving Average Crossover"
+    motivation = "Long names whose short SMA has crossed above the long SMA — the textbook trend-following signal."
+    economic_rationale = "Trend-following monetises momentum at the single-name level: when the fast moving average leads the slow one, recent demand has been outpacing supply."
+    why_it_works = "Simple windows produce sharper crossovers than exponential weighting, so cross-sectional ranks turn over decisively when a stock breaks trend; pairing with a low rebalance frequency keeps turnover manageable."
     why_it_fails = "Choppy or mean-reverting regimes whipsaw the signal; transaction costs and signal lag can wipe out the edge."
 
     def __init__(self, short_window: int = 50, long_window: int = 200):
@@ -469,10 +469,15 @@ class MovingAverageCrossoverStrategy(SignalStrategy):
 
     def generate_scores(self, dataset: ResearchDataset) -> pd.DataFrame:
         prices = dataset.prices
-        short_ema = prices.ewm(span=self.short_window, adjust=False, min_periods=self.short_window).mean()
-        long_ema = prices.ewm(span=self.long_window, adjust=False, min_periods=self.long_window).mean()
-        # Normalised EMA spread: positive = bullish trend, negative = bearish.
-        return (short_ema - long_ema).div(long_ema.replace(0, np.nan))
+        # Rolling SMA, not EMA — the label and the catalog formula both say
+        # "MA". EMA's exponential decay smooths the cross-section so heavily
+        # that small window tweaks barely move the rank ordering, which read
+        # as "Sharpe doesn't change" from the UI. Hard-window SMA flips
+        # observations in/out as the window slides, so 50→60 actually shifts
+        # the portfolio.
+        short_ma = prices.rolling(self.short_window, min_periods=self.short_window).mean()
+        long_ma  = prices.rolling(self.long_window,  min_periods=self.long_window).mean()
+        return (short_ma - long_ma).div(long_ma.replace(0, np.nan))
 
 
 class MLRidgeStrategy(SignalStrategy):
