@@ -108,45 +108,66 @@ _SHORT_QUANTILE_OVERRIDE = {
 
 STRATEGIES = [
     {
-        "id": "momentum",
-        "cls": rs.CrossSectionalMomentumStrategy,
-        "cls_name": "CrossSectionalMomentumStrategy",
-        "label": "Momentum",
-        "formula": "score(t, i) = ln( P[t − skip, i] / P[t − lookback, i] )",
-        "summary": "Rank stocks by their return from (today − lookback_days) to (today − skip_days); long the top quantile, optionally short the bottom.",
+        "id": "value_composite",
+        "cls": rs.ValueCompositeStrategy,
+        "cls_name": "ValueCompositeStrategy",
+        "label": "Value Composite",
+        "formula": "score(t, i) = z(div_yield) + z(EPS / P) + z(− log market_cap)",
+        "summary": (
+            "Fama & French (1992, 2015 — Five-Factor Model). Cross-sectional "
+            "value blend of trailing dividend yield, earnings yield (E/P), and "
+            "a small-size tilt, each cross-sectionally z-scored and summed. "
+            "Long the cheapest decile, optionally short the most expensive."
+        ),
         "params": [
-            {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 504, "step": 21,
-             "help": "Return window (126 ≈ 6mo)."},
-            {"name": "skip_days",     "type": "int", "default": 21,  "min": 0,  "max": 63,  "step": 1,
-             "help": "Skip last N days to drop short-term reversal (21 ≈ 1mo)."},
+            {"name": "trailing_days", "type": "int", "default": 252, "min": 60, "max": 756, "step": 21,
+             "help": "Window for trailing dividend sum (252 = 1y)."},
         ],
-        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
-    },
-    {
-        "id": "mean_reversion",
-        "cls": rs.ShortTermReversalStrategy,
-        "cls_name": "ShortTermReversalStrategy",
-        "label": "Mean Reversion",
-        "formula": "score(t, i) = − ln( P[t, i] / P[t − lookback, i] )",
-        "summary": "Score stocks by their negated recent return; long the biggest recent losers, expecting a bounce.",
-        "params": [
-            {"name": "lookback_days", "type": "int", "default": 5, "min": 1, "max": 21, "step": 1,
-             "help": "Recent-return window; biggest losers rank highest."},
+        "engine_overrides": [
+            {**_SHORT_QUANTILE_OVERRIDE, "default": 0.10,
+             "help": "Bottom decile (most expensive names) sold short — recovers the long-short HML sleeve."},
         ],
-        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
     },
     {
         "id": "moving_average",
         "cls": rs.MovingAverageCrossoverStrategy,
         "cls_name": "MovingAverageCrossoverStrategy",
-        "label": "Moving Average",
-        "formula": "score(t, i) = EMA_short(P, t, i) / EMA_long(P, t, i) − 1",
-        "summary": "Cross-sectional EMA crossover — score = (short EMA − long EMA) / long EMA. Long names in the strongest uptrend, short the weakest.",
+        "label": "Simple Moving Average",
+        "formula": "score(t, i) = MA_short(P, t, i) / MA_long(P, t, i) − 1",
+        "summary": "Cross-sectional moving-average crossover. Long names in the strongest uptrend (short MA above long MA), short the weakest.",
         "params": [
             {"name": "short_window", "type": "int", "default": 50,  "min": 5,  "max": 100, "step": 5,
-             "help": "Span of the fast EMA."},
+             "help": "Span of the fast moving average."},
             {"name": "long_window",  "type": "int", "default": 200, "min": 50, "max": 400, "step": 10,
-             "help": "Span of the slow EMA."},
+             "help": "Span of the slow moving average."},
+        ],
+        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
+    },
+    {
+        "id": "residual_momentum",
+        "cls": rs.ResidualMomentumStrategy,
+        "cls_name": "ResidualMomentumStrategy",
+        "label": "Residual Momentum",
+        "formula": (
+            "ε_i(t) = r_i(t) − β_i(t)·r_m(t);   "
+            "score(t, i) = ⟨ ε_i(τ) / σ̂_ε,i(τ) ⟩  for  τ ∈ [t − skip − lookback, t − skip]"
+        ),
+        "summary": (
+            "Blitz, Huij & Martens (2011, JFE). Regress each stock's daily "
+            "returns on the equal-weight benchmark over a rolling window, "
+            "standardize the residuals by their own rolling std, then take "
+            "the mean of those standardized residuals over a 12-1-style "
+            "lookback (skipping the most recent month). Same direction as "
+            "vanilla momentum but with market beta residualized away — "
+            "survives the 2009-style momentum crash that punishes raw 12-1."
+        ),
+        "params": [
+            {"name": "beta_window", "type": "int", "default": 252, "min": 63, "max": 504, "step": 21,
+             "help": "Rolling window for market-beta regression (252 ≈ 1y)."},
+            {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 252, "step": 21,
+             "help": "Window for averaging standardized residuals (126 ≈ 6mo)."},
+            {"name": "skip_days", "type": "int", "default": 21, "min": 0, "max": 63, "step": 1,
+             "help": "Skip the most recent N days to avoid short-term reversal contamination."},
         ],
         "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
     },
@@ -183,55 +204,6 @@ STRATEGIES = [
             {**_SHORT_QUANTILE_OVERRIDE, "default": 0.10,
              "help": "Bottom-decile (negative SUE) names sold short — recovers the canonical long-short PEAD sleeve."},
         ],
-    },
-    {
-        "id": "value_composite",
-        "cls": rs.ValueCompositeStrategy,
-        "cls_name": "ValueCompositeStrategy",
-        "label": "Value Composite",
-        "formula": "score(t, i) = z(div_yield) + z(EPS / P) + z(− log market_cap)",
-        "summary": (
-            "Fama & French (1992, 2015 — Five-Factor Model). Cross-sectional "
-            "value blend of trailing dividend yield, earnings yield (E/P), and "
-            "a small-size tilt, each cross-sectionally z-scored and summed. "
-            "Long the cheapest decile, optionally short the most expensive."
-        ),
-        "params": [
-            {"name": "trailing_days", "type": "int", "default": 252, "min": 60, "max": 756, "step": 21,
-             "help": "Window for trailing dividend sum (252 = 1y)."},
-        ],
-        "engine_overrides": [
-            {**_SHORT_QUANTILE_OVERRIDE, "default": 0.10,
-             "help": "Bottom decile (most expensive names) sold short — recovers the long-short HML sleeve."},
-        ],
-    },
-    {
-        "id": "residual_momentum",
-        "cls": rs.ResidualMomentumStrategy,
-        "cls_name": "ResidualMomentumStrategy",
-        "label": "Residual Momentum",
-        "formula": (
-            "ε_i(t) = r_i(t) − β_i(t)·r_m(t);   "
-            "score(t, i) = ⟨ ε_i(τ) / σ̂_ε,i(τ) ⟩  for  τ ∈ [t − skip − lookback, t − skip]"
-        ),
-        "summary": (
-            "Blitz, Huij & Martens (2011, JFE). Regress each stock's daily "
-            "returns on the equal-weight benchmark over a rolling window, "
-            "standardize the residuals by their own rolling std, then take "
-            "the mean of those standardized residuals over a 12-1-style "
-            "lookback (skipping the most recent month). Same direction as "
-            "vanilla momentum but with market beta residualized away — "
-            "survives the 2009-style momentum crash that punishes raw 12-1."
-        ),
-        "params": [
-            {"name": "beta_window", "type": "int", "default": 252, "min": 63, "max": 504, "step": 21,
-             "help": "Rolling window for market-beta regression (252 ≈ 1y)."},
-            {"name": "lookback_days", "type": "int", "default": 126, "min": 21, "max": 252, "step": 21,
-             "help": "Window for averaging standardized residuals (126 ≈ 6mo)."},
-            {"name": "skip_days", "type": "int", "default": 21, "min": 0, "max": 63, "step": 1,
-             "help": "Skip the most recent N days to avoid short-term reversal contamination."},
-        ],
-        "engine_overrides": [_SHORT_QUANTILE_OVERRIDE],
     },
 ]
 STRATEGY_BY_ID = {s["id"]: s for s in STRATEGIES}

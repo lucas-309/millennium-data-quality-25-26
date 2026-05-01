@@ -5,10 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Strategy Simulator</title>
   <link rel="stylesheet" href="style.css" />
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" />
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
 </head>
 <body>
   <div id="progress" class="progress idle"></div>
@@ -74,15 +71,8 @@
           <header class="panel-head">
             <h3>Live code</h3>
             <span class="panel-sub" id="code-path">strategies/research_strategies.py + backtester/research_backtester.py</span>
-            <div class="code-edit-toolbar">
-              <span class="code-edit-status" id="code-edit-status"></span>
-              <button type="button" id="code-edit-toggle" class="code-edit-btn">Edit</button>
-              <button type="button" id="code-edit-run" class="code-edit-btn primary" hidden>Run edited</button>
-              <button type="button" id="code-edit-revert" class="code-edit-btn" hidden>Revert</button>
-            </div>
           </header>
-          <pre class="code-block"><code id="code-live" class="language-python"></code></pre>
-          <textarea id="code-editor" class="code-editor" hidden spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+          <textarea id="code-editor" class="code-editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
         </div>
 
         <div class="metrics-strip">
