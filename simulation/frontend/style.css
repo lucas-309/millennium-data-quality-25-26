@@ -272,11 +272,17 @@ a:hover { color: var(--amber-hot); text-decoration: underline; }
   align-items: start;
 }
 .sidebar {
-  /* Sticky sidebar was leaving a black void below the panel as the main
-     column scrolled past on tall pages. Static positioning lets the
-     sidebar scroll out of view naturally — params are at the top, results
-     are below. Cleaner for stage scrolling than a half-empty pinned column. */
+  /* Sticky so params stay visible while you scroll the chart and tweak
+     knobs live. align-self:start keeps the sidebar cell at its natural
+     height so the panel hugs its content (no black void below it).
+     max-height + overflow handles the rare case where the params rail
+     is taller than the viewport — it scrolls internally instead of
+     pushing the page. */
+  position: sticky;
+  top: 64px;
   align-self: start;
+  max-height: calc(100vh - 76px);
+  overflow-y: auto;
 }
 .app-split { align-items: start; }
 .sidebar .panel { border-color: var(--border); }
