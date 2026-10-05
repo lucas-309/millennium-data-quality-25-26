@@ -10,6 +10,7 @@ Usage:
   python run_sp500_fetch.py --start 2010-01-01
   python run_sp500_fetch.py --tickers AAPL MSFT          # download just a subset
   python run_sp500_fetch.py --refresh-universe           # re-scrape Wikipedia
+  python run_sp500_fetch.py --refresh-universe --prune   # ...and drop cached tickers no longer in the index
   python run_sp500_fetch.py --pause 0.8                  # slower per-ticker pace
 """
 from __future__ import annotations
@@ -31,6 +32,7 @@ def main() -> None:
     ap.add_argument("--force", action="store_true", help="re-fetch even if cached")
     ap.add_argument("--no-info", action="store_true", help="skip Ticker.info calls (faster)")
     ap.add_argument("--refresh-universe", action="store_true", help="re-scrape Wikipedia")
+    ap.add_argument("--prune", action="store_true", help="delete cached tickers that are no longer in the universe")
     ap.add_argument("--tickers", nargs="+", help="override universe with this list")
     args = ap.parse_args()
 
@@ -43,6 +45,13 @@ def main() -> None:
         print(f"S&P 500 universe ({snap.fetched_at}): {len(tickers)} tickers")
 
     already = set(list_cached_tickers())
+    if args.prune and not args.tickers:
+        from backtester.yfinance_cache import CACHE_ROOT
+        stale = sorted(already - set(tickers))
+        for t in stale:
+            (CACHE_ROOT / f"{t}.pkl").unlink(missing_ok=True)
+        already -= set(stale)
+        print(f"pruned {len(stale)} cached tickers no longer in the universe: {' '.join(stale) or '-'}")
     fresh_count = sum(1 for t in tickers if t not in already) if not args.force else len(tickers)
     print(f"already cached: {len(already & set(tickers))}  | fresh to fetch: {fresh_count}")
     if fresh_count == 0 and not args.force:
