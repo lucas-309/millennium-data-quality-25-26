@@ -103,9 +103,10 @@ backend (`_compile_strategy_override`) execs the user's source in a
 sandbox namespace seeded with `pd`, `np`, `SignalStrategy`, and
 `ResearchDataset`, finds the new subclass, and runs it.
 
-Production runs on a Fly.io VM (shared-cpu-4x, 8GB) — wharton's
-parquet decode peaks at ~6GB during load. The frontend ships via
-Vercel from `main`.
+Production runs on a single scale-to-zero Fly.io machine (shared-cpu-4x,
+8GB) — wharton's parquet decode peaks at ~6GB during load. It wakes on
+the first request and stops after a few idle minutes (README → Deploy).
+The frontend ships via Vercel from `main`.
 
 ### Data layer — `backtester/data_source.py` + `backtester/research_data.py`
 `WhartonDataSource` loads the local parquet, computes split-adjusted and

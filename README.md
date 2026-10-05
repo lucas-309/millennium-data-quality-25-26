@@ -26,8 +26,9 @@ Three strategies in the catalog today:
 
 Two data sources, switchable from the topbar:
 
-- `yfinance` — today's ~503 S&P 500 constituents, refreshed daily via
-  `run_sp500_fetch.py` and persisted to `data_cache/yfinance/`.
+- `yfinance` — the 503 current S&P 500 constituents (Wikipedia list as of the
+  last `run_sp500_fetch.py --refresh-universe`), cached in `data_cache/yfinance/`
+  and baked into the backend image.
 - `wharton` — the static Wharton WRDS panel
   (`backtester/WhartonDataSource4.parquet`, ~830 tickers across the historic
   S&P 500 membership). Survivorship-bias-aware.
@@ -142,9 +143,22 @@ Session notes: [SESSION_NOTES.md](SESSION_NOTES.md).
 
 - **Frontend (Vercel)** — auto-deploys from `main`. Static TypeScript build,
   rewrites `/api/*` to the Fly backend (see `simulation/frontend/vercel.json`).
-- **Backend (Fly)** — `fly deploy --remote-only`. The VM runs
-  `simulation/backend/server.py` on shared-cpu-4x with 8GB memory (sized for
-  the wharton load + simulate peak; see `fly.toml`).
+- **Backend (Fly)** — one shared-cpu-4x / 8GB machine running
+  `simulation/backend/server.py` (sized for the wharton load + simulate peak)
+  that scales to zero: `fly.toml` sets `auto_stop_machines = "stop"` and
+  `min_machines_running = 0`, so idle cost is ~$0/month. It wakes on the first
+  request (~5s) and the yfinance dataset is ready ~15s later; the frontend
+  polls `/api/status` until then. Redeploy:
+
+  ```sh
+  # data_cache/ and sp500_universe.pkl are gitignored but COPY'd into the image
+  python run_sp500_fetch.py --refresh-universe --prune --no-info
+  fly deploy --ha=false --remote-only      # --ha=false: one machine, not two
+  fly ips list -a cds-millennium-backtester
+  # if that shows no addresses (flyctl has skipped this on a first deploy):
+  fly ips allocate-v4 --shared -a cds-millennium-backtester
+  fly ips allocate-v6 -a cds-millennium-backtester
+  ```
 
 ## Running tests
 
